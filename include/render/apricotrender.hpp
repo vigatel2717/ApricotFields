@@ -5,17 +5,9 @@
 #ifndef APRICOTFIELDS_APRICOTRENDER_HPP
 #define APRICOTFIELDS_APRICOTRENDER_HPP
 
+#include <spudgpu.hpp>
+
 namespace Apricot::Fields {
-	class Renderer {
-	public:
-		Renderer();
-		~Renderer();
-
-		void BeginScene();
-		void EndScene();
-
-		void Render();
-	};
 }
 
 #endif //APRICOTFIELDS_APRICOTRENDER_HPP

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.2)
+cmake_minimum_required(VERSION 3.30)
 project(ApricotFields)
 
 set(CMAKE_CXX_STANDARD 26)
@@ -10,11 +10,13 @@ add_library(ApricotFields STATIC
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
-# SpudLib stuff
+
+# Add the directory for SpudLib library
 if (NOT TARGET spudlib)
     add_subdirectory(../spudlib ${CMAKE_CURRENT_BINARY_DIR}/spudlib)
-    target_link_libraries(ApricotFields PRIVATE spudlib)
 endif ()
+# Link SpudLib library
+target_link_libraries(ApricotFields PUBLIC spudlib)
 
 # Vulkan stuff
 # Manually hint where Vulkan is located
