@@ -5,7 +5,7 @@
 #ifndef APRICOTFIELDS_APRICOTRENDER_HPP
 #define APRICOTFIELDS_APRICOTRENDER_HPP
 
-#include <spudgpu.hpp>
+#include <spudgpu.h>
 
 namespace Apricot::Fields {
 }
