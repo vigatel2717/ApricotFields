@@ -1,4 +1,4 @@
-#include "apricotfields.hpp"
+#include "apricotfields.h"
 
 #include <iostream>
 
