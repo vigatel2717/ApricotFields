@@ -1,8 +1,8 @@
 #ifndef APRICOT_RENDERER_H
 #define APRICOT_RENDERER_H
 
-#include "../apricot_math.h"
-#include "../../spudlib/include/spudgpu.h"
+#include "apricot_math.h"
+#include "spudgpu.h"
 #include <stdbool.h>
 #include <stdint.h>
 

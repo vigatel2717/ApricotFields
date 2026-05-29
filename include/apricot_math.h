@@ -8,10 +8,10 @@
 typedef struct { float  x, y;          } ApriVec2;
 typedef struct { float  x, y, z;       } ApriVec3;
 typedef struct { float  x, y, z, w;    } ApriVec4;
-typedef struct { double x, y, z;       } ApriDVec3;  /* CAD world precision */
+typedef struct { double x, y, z;       } ApriDVec3;
 typedef struct { double x, y, z, w;    } ApriDVec4;
-typedef struct { float  x, y, z, w;    } ApriQuat;   /* xyzw, matches GLM default */
+typedef struct { float  x, y, z, w;    } ApriQuat;
 typedef struct { float  m[16];         } ApriMat4;   /* column-major */
-typedef struct { double m[16];         } ApriDMat4;  /* column-major, large world */
+typedef struct { double m[16];         } ApriDMat4;  /* column-major */
 
 #endif /* APRICOT_MATH_H */

@@ -5,7 +5,9 @@ set(CMAKE_CXX_STANDARD 26)
 
 add_library(ApricotFields STATIC
         src/apricotfields.cpp
-        src/render/apricotrender.cpp)
+        src/render/apricotrender.cpp
+        src/render/aprirenderbuffers.cpp
+        include/render/aprendimages.h)
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
