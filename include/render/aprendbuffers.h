@@ -1,6 +1,6 @@
 
-#ifndef APREND_RENDER_BUFFERS_H
-#define APREND_RENDER_BUFFERS_H
+#ifndef APREND_BUFFERS_H
+#define APREND_BUFFERS_H
 
 #include "aprendbase.h"
 #include "stdint.h"
@@ -17,6 +17,23 @@
 extern "C"
 {
 #endif
+
+    /*
+     * Rewrite this entire thing
+     * Make something like :
+     * aprend_static_mesh_buffer_t*
+     * aprend_static_mesh_set_data()
+     * aprend_dynamic_mesh_buffer_t*
+     * aprend_dynamic_mesh_set_vertex_range(data_range, vertices)
+     * aprend_dynamic_mesh_set_index_range(data_range, indices)
+    */
+
+    typedef struct APREND_DEFAULT_VERTEX {
+        float position[3];
+        float normal[3];
+        float uv[2];
+        float color[4];
+    } APREND_DEFAULT_VERTEX;
 
     typedef struct aprend_buffer_context_t *aprend_buffer_context;
     typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
@@ -89,11 +106,11 @@ extern "C"
         aprend_uniform_buffer buffer,
         uint32_t local_offset,
         uint32_t size,
-        void **ppData);
+        void *pData);
     bool aprend_uniform_buffer_update_by_name(
         aprend_uniform_buffer buffer,
         const char *name,
-        void *ppData);
+        void *pData);
 
     typedef uint32_t APREND_BUFFER_ELEMENT_TYPE;
     enum
@@ -133,48 +150,54 @@ extern "C"
         aprend_buffer_context context,
         const aprend_buffer_layout *vertex_layout,
         uint32_t vertex_count,
-        void **ppData);
+        void *pData);
     void aprend_vertex_buffer_destroy(
         aprend_vertex_buffer buffer);
     bool aprend_vertex_buffer_update(
         aprend_vertex_buffer buffer,
         uint32_t vertex_offset,
         uint32_t vertex_count,
-        void **ppData);
+        void *pData);
     void aprend_vertex_buffer_get_layout(
         aprend_vertex_buffer buffer,
         aprend_buffer_layout *out_layout,
         uint32_t *out_vertex_count);
 
+    typedef enum APREND_INDEX_STRIDE {
+        APREND_INDEX_STRIDE_NONE = 0,
+        APREND_INDEX_STRIDE_UINT16 = 2,
+        APREND_INDEX_STRIDE_UINT32 = 4
+    } APREND_INDEX_STRIDE;
+
     aprend_index_buffer aprend_index_buffer_create(
         aprend_buffer_context context,
-        bool index_32bit,
+        APREND_INDEX_STRIDE stride,
         uint32_t index_count,
-        void **ppData);
+        void *pData);
     void aprend_index_buffer_destroy(
         aprend_index_buffer buffer);
     bool aprend_index_buffer_update(
         aprend_index_buffer buffer,
         uint32_t index_offset,
         uint32_t index_count,
-        void **ppData);
-    bool aprend_index_buffer_is_32bit(
+        void *pData);
+    uint32_t aprend_index_buffer_get_stride(
         aprend_index_buffer buffer);
 
     aprend_storage_buffer aprend_storage_buffer_create(
         aprend_buffer_context context,
         uint64_t size,
-        void *ppData);
+        void *pData);
     void aprend_storage_buffer_destroy(
         aprend_storage_buffer buffer);
     bool aprend_storage_buffer_update(
         aprend_storage_buffer buffer,
         uint64_t local_offset,
         uint64_t size,
-        void **ppData);
+        void *pData);
 
 #if __cplusplus
 }
 #endif
 
-#endif // APREND_RENDER_BUFFERS_H
+#endif // APREND_BUFFERS_H

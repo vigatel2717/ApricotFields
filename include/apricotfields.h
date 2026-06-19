@@ -1,8 +1,8 @@
 #ifndef APRICOTFIELDS_H
 #define APRICOTFIELDS_H
 
-#include "render/aprirenderbase.h"
-#include "render/aprirenderbuffers.h"
+#include "render/aprendbase.h"
+#include "render/aprendbuffers.h"
 
 /*
 #if __cplusplus

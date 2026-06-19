@@ -17,14 +17,26 @@ extern "C"
 {
 #endif
 
+typedef struct aprend_texture_desc
+{
+	SPUDGPU_FORMAT format;
+	uint32_t width;
+	uint32_t height;
+    SPUDGPU_IMAGE_TYPE type;
+	SPUDGPU_IMAGE_USAGE usage;
+    SPUDGPU_MEMORY_FLAGS memory_flags;
+    //TextureWrap sampler_wrap = TextureWrap::Repeat;
+	//TextureFilter sampler_filter = TextureFilter::Linear;
+	
+	bool generate_mips;
+	bool storage;
+	bool store_locally;
+} aprend_texture_desc;
+
 typedef struct aprend_texture2d_t *aprend_texture2d;
 aprend_texture2d aprend_texture2d_create(
     aprend_instance instance,
-    uint32_t width,
-    uint32_t height,
-    SPUDGPU_FORMAT format,
-    SPUDGPU_IMAGE_USAGE usage,
-    SPUDGPU_MEMORY_FLAGS memory_flags);
+    const aprend_texture_desc *desc);
 void aprend_texture2d_destroy(
     aprend_texture2d texture);
 bool aprend_texture2d_update(
