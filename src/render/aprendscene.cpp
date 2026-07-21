@@ -274,6 +274,24 @@ void aprend_node_set_scale(aprend_node node, ApriVec3 scale) {
 	node->local_scale = to_glm(scale);
 }
 
+ApriDVec3 aprend_node_get_translation(aprend_node node) {
+	if (!node)
+		return {0.0, 0.0, 0.0};
+	return {node->local_translation.x, node->local_translation.y, node->local_translation.z};
+}
+
+ApriQuat aprend_node_get_rotation(aprend_node node) {
+	if (!node)
+		return {0.f, 0.f, 0.f, 1.f};
+	return from_glm(node->local_rotation);
+}
+
+ApriVec3 aprend_node_get_scale(aprend_node node) {
+	if (!node)
+		return {1.f, 1.f, 1.f};
+	return from_glm(node->local_scale);
+}
+
 ApriDVec3 aprend_node_get_world_translation(aprend_node node) {
 	if (!node)
 		return {0.0, 0.0, 0.0};

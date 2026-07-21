@@ -68,6 +68,14 @@ void aprend_node_set_scale(
     aprend_node node,
     ApriVec3 scale);
 
+/* Local transform as last set by aprend_node_set_translation/rotation/scale
+ * — not the accumulated world transform. Needed by anything that has to
+ * tell "did this node's own transform change" apart from "did a parent's
+ * transform change," e.g. ApSync's per-frame dirty check. */
+ApriDVec3 aprend_node_get_translation(aprend_node node);
+ApriQuat aprend_node_get_rotation(aprend_node node);
+ApriVec3 aprend_node_get_scale(aprend_node node);
+
 ApriDVec3 aprend_node_get_world_translation(aprend_node node);
 ApriMat4 aprend_node_get_world_transform(aprend_node node);
 

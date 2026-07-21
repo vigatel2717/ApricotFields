@@ -16,6 +16,8 @@ add_library(ApricotFields STATIC
         src/cad/apcad_internal.hpp
         src/cad/apcadsolid.cpp
         src/cad/apcadraycast.cpp
+        src/sync/apsync_internal.hpp
+        src/sync/apsyncnet.cpp
         include/apricore.h
         include/cad/apcadbase.h
         include/cad/apcadsolid.h
@@ -24,7 +26,8 @@ add_library(ApricotFields STATIC
         include/render/aprendbase.h
         include/render/aprendbuffers.h
         include/render/aprendimages.h
-        include/render/aprendframes.h)
+        include/render/aprendframes.h
+        include/sync/apsyncnet.h)
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
