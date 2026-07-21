@@ -93,4 +93,4 @@ FetchContent_Declare(
 )
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 FetchContent_MakeAvailable(glm)
-target_link_libraries(ApricotFields PRIVATE glm::glm)
+target_link_libraries(ApricotFields PUBLIC glm::glm)
