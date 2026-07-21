@@ -5,11 +5,26 @@ set(CMAKE_CXX_STANDARD 26)
 
 add_library(ApricotFields STATIC
         src/apricotfields.cpp
-        src/render/apricotrender.cpp
+        src/apricore.cpp
+        src/render/aprend_internal.hpp
+        src/render/aprendscene.cpp
         src/render/aprendbuffers.cpp
+        src/render/aprendimages_internal.hpp
         src/render/aprendimages.cpp
+        src/render/aprendframes.cpp
         src/render/aprendbase.cpp
-        include/render/aprendimages.h)
+        src/cad/apcad_internal.hpp
+        src/cad/apcadsolid.cpp
+        src/cad/apcadraycast.cpp
+        include/apricore.h
+        include/cad/apcadbase.h
+        include/cad/apcadsolid.h
+        include/cad/apcadraycast.h
+        include/render/aprendscene.h
+        include/render/aprendbase.h
+        include/render/aprendbuffers.h
+        include/render/aprendimages.h
+        include/render/aprendframes.h)
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 

@@ -8,7 +8,6 @@ layout(location = 3) in vec4 in_color;
 layout(push_constant) uniform PC {
     mat4  mvp;
     vec4  color;
-    uint  pick_id;
 } pc;
 
 layout(location = 0) out vec4 frag_color;

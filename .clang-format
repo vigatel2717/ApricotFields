@@ -8,5 +8,7 @@ TabWidth: 4
 IndentWidth: 4
 UseTab: ForIndentation
 
-AlignAfterOpenBracket: AlwaysBreak
-BinPackParameters: false
+BinPackParameters: AlwaysOnePerLine
+BreakAfterOpenBracketFunction: true
+BreakBeforeCloseBracketFunction: false
+ColumnLimit: 160

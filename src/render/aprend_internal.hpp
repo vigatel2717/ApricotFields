@@ -2,10 +2,12 @@
 #define APREND_INTERNAL_HPP
 
 /* Internal header — never included outside ApricotFields/src/render/.
- * Defines the concrete structs behind every opaque handle in aprend_renderer.h
- * and provides zero-cost GLM conversion helpers. */
+ * Defines the concrete structs behind every opaque handle in aprendscene.h
+ * and aprendbase.h, and provides zero-cost GLM conversion helpers. */
 
 #include "render/aprendscene.h"
+#include "render/aprendbuffers.h"
+#include "render/aprendframes.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -48,9 +50,6 @@ inline ApriMat4 from_glm(const glm::mat4 &m)
     return r;
 }
 
-/* ============================================================
-   aprend_node_t
-   ============================================================ */
 
 typedef struct aprend_node_t
 {
@@ -76,36 +75,19 @@ typedef struct aprend_node_t
     std::vector<aprend_light_t *> lights;
 } aprend_node_t;
 
-/* ============================================================
-   aprend_scene_t
-   ============================================================ */
 
 typedef struct aprend_scene_t
 {
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
+    aprend_instance instance{nullptr};
+
     /* Flat registries — used for ownership and scene-wide queries.
      * The node hierarchy is expressed through node parent/child pointers. */
     std::vector<aprend_node_t *> all_nodes;
     std::vector<aprend_geometry_t *> all_geometries;
     std::vector<aprend_light_t *> all_lights;
-
-    /* Picking registry — index is pick_id, value is the geometry at that ID.
-     * Index 0 is always nullptr (reserved as the "nothing hit" sentinel).
-     * Slots are nulled on geometry destroy but never removed — pick_ids are stable
-     * for the lifetime of the scene. */
-    std::vector<aprend_geometry_t *> pick_registry;
-
-    /* Current picking state — mirrored to the GPU UBO each time it changes. */
-    uint32_t hovered_id{0};
-    uint32_t selected_id{0};
-    uint32_t cursor_x{0};
-    uint32_t cursor_y{0};
-
-    /* GPU-side uniform buffer bound to every real shader.
-     * Contains ApricotPickingState. Updated whenever hover/selection/cursor changes. */
-    spudgpu_buffer picking_state_buffer{nullptr};
 } aprend_scene_t;
 
 /* ============================================================
@@ -121,8 +103,10 @@ typedef struct aprend_mesh_t
 
     std::vector<aprend_vertex_binding> vertex_bindings;
     std::vector<void *> vertex_binding_data;
+    uint32_t vertex_count{0};
     APREND_INDEX_STRIDE index_stride{APREND_INDEX_STRIDE_UINT16};
-    void *indices;
+    void *indices{nullptr};
+    uint32_t index_count{0};
 
     /* GPU resources — valid only after aprend_mesh_upload() */
     aprend_buffer_context vertex_buffer_ctx{nullptr};
@@ -132,28 +116,24 @@ typedef struct aprend_mesh_t
     bool uploaded{false};
 } aprend_mesh_t;
 
-/* ============================================================
-   aprend_material_t
-   ============================================================ */
 
 typedef struct aprend_material_t
 {
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
-    std::string shader_name;
+    aprend_material_t() = default;
+    ~aprend_material_t();
+
     glm::vec4 color{1.f, 1.f, 1.f, 1.f};
 
     std::unordered_map<std::string, float> float_params;
     std::unordered_map<std::string, glm::vec4> vec4_params;
 
-    /* Resolved by the material system when the shader is loaded */
+    /* Built by aprend_material_create from caller-supplied SPIR-V. */
     spudgpu_shader_pipeline pipeline{nullptr};
 } aprend_material_t;
 
-/* ============================================================
-   aprend_geometry_t
-   ============================================================ */
 
 typedef struct aprend_geometry_t
 {
@@ -162,20 +142,11 @@ typedef struct aprend_geometry_t
 #endif
     std::string name;
 
-    /* Compact scene-local pick ID — index into aprend_scene_t::pick_registry.
-     * 0 = unassigned (should never happen after creation).
-     * Stored as two uint32_t in push constants so the picking shader
-     * can output it to the R32G32_UINT picking texture. */
-    uint32_t pick_id{0};
-
     aprend_node_t *parent_node{nullptr};
     aprend_mesh_t *mesh{nullptr};
     aprend_material_t *material{nullptr};
 } aprend_geometry_t;
 
-/* ============================================================
-   aprend_camera_t
-   ============================================================ */
 
 enum class ApricotProjectionType
 {
@@ -212,16 +183,13 @@ typedef struct aprend_camera_t
     bool dirty{true};
 } aprend_camera_t;
 
-/* ============================================================
-   aprend_light_t
-   ============================================================ */
 
 typedef struct aprend_light_t
 {
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
-    APRICOT_LIGHT_TYPE type{APRICOT_LIGHT_DIRECTIONAL};
+    APREND_LIGHT_TYPE type{APREND_LIGHT_DIRECTIONAL};
     glm::vec4 color{1.f, 1.f, 1.f, 1.f};
     float intensity{1.f};
     float range{10.f};
@@ -230,62 +198,56 @@ typedef struct aprend_light_t
     aprend_node_t *node{nullptr};
 } aprend_light_t;
 
-/* ============================================================
-   aprend_viewport_t
-   ============================================================ */
 
 typedef struct aprend_viewport_t
 {
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
+    aprend_instance instance{nullptr};
     aprend_scene_t *scene{nullptr};
     aprend_camera_t *camera{nullptr};
-    spudgpu_swap_chain swap_chain{nullptr};
 
     /* Normalized 0-1 rect within the swap chain surface */
     float x{0.f}, y{0.f}, w{1.f}, h{1.f};
 
     /* Off-screen rendering path (is_offscreen == true).
      * render_width / render_height are fixed at creation time.
-     * color_image is COLOR_ATTACHMENT | SAMPLED; the caller transitions
-     * it to SHADER_READ_ONLY before passing it to ImGui. */
+     * framebuffer's single color attachment is SHADER_RESOURCE | RENDER_TARGET
+     * (use_for_gui); the caller transitions it to SHADER_READ_ONLY before
+     * passing it to ImGui. */
     bool is_offscreen{false};
-    spudgpu_image color_image{nullptr};
-    spudgpu_image_view color_view{nullptr};
+    aprend_framebuffer framebuffer{nullptr};
     uint32_t render_width{0};
     uint32_t render_height{0};
 
-    /* Offscreen picking render target — SPUDGPU_FORMAT_R32G32_UINT.
-     * Each pixel stores uvec2(pick_id, 0). Shared depth with the main pass
-     * so occluded geometry cannot be picked through surfaces in front of it.
-     * Dimensions match the pixel area of this viewport's rect. */
-    spudgpu_image picking_image{nullptr};
-    spudgpu_image_view picking_image_view{nullptr};
-
-    /* CPU-readable staging buffer — picking_image is copied here after the
-     * picking pass so aprend_viewport_query_pick() can read a pixel without
-     * a GPU stall. Size = picking_width * picking_height * 8 bytes.
-     * TODO: requires spudgpu_cmd_copy_image_to_buffer (not yet in SpudGPU). */
-    spudgpu_buffer picking_readback{nullptr};
-
-    uint32_t picking_width{0};
-    uint32_t picking_height{0};
-
-    /* Last resolved hover ID read back from the picking texture this frame. */
-    uint32_t last_hovered_id{0};
+    /* The depth attachment (framebuffer->depth_attachment) is internal to
+     * Aprend — nothing outside aprend_viewport_record ever touches it, so
+     * unlike the color target it needs no caller-facing barrier contract.
+     * True right after creation/resize (attachment is fresh, UNDEFINED
+     * layout); cleared to false once aprend_viewport_record has done the
+     * one-time transition to DEPTH_STENCIL_ATTACHMENT_OPTIMAL. */
+    bool depth_image_fresh{true};
 } aprend_viewport_t;
-
-#include "render/aprendbuffers.h"
 
 typedef struct aprend_instance_t
 {
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
+    aprend_instance_t() = default;
+    ~aprend_instance_t();
+
     aprend_instance_desc desc{};
-    spudgpu_command_allocator cmd_allocator;
-    spudgpu_command_list cmd_list;
+    spudgpu_command_allocator cmd_allocator{nullptr};
+    spudgpu_command_list cmd_list{nullptr};
+
+    /* Aprend's optional built-in debug shader — see aprend_renderer_init.
+     * Device-bound, so it lives per-instance rather than as a global
+     * singleton; NULL until aprend_renderer_init succeeds for this instance. */
+    spudgpu_shader_module default_vertex_shader{nullptr};
+    spudgpu_shader_module default_fragment_shader{nullptr};
+    spudgpu_shader_pipeline default_pipeline{nullptr};
 } aprend_instance_t;
 
 struct AprendBufferContextRange
@@ -312,11 +274,14 @@ typedef struct aprend_uniform_buffer_t
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
-    aprend_buffer_context context;
+	aprend_uniform_buffer_t() = default;
+	~aprend_uniform_buffer_t();
+	spudgpu_buffer buffer;
     spudgpu_buffer_view buffer_view;
     spudgpu_buffer_view_desc buffer_view_desc;
     aprend_uniform_layout layout;
     uint32_t total_size;
+    void *uniform_data_ptr;
 } aprend_uniform_buffer_t;
 
 typedef struct aprend_vertex_buffer_t
@@ -324,8 +289,9 @@ typedef struct aprend_vertex_buffer_t
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
-    aprend_buffer_context context;
-    uint32_t context_offset;
+    aprend_vertex_buffer_t() = default;
+    ~aprend_vertex_buffer_t();
+    spudgpu_buffer buffer;
     spudgpu_buffer_view buffer_view;
     spudgpu_buffer_view_desc buffer_view_desc;
     aprend_buffer_layout vertex_layout;
@@ -338,7 +304,9 @@ typedef struct aprend_index_buffer_t
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
-    aprend_buffer_context context;
+	aprend_index_buffer_t() = default;
+	~aprend_index_buffer_t();
+	spudgpu_buffer buffer;
     spudgpu_buffer_view buffer_view;
     spudgpu_buffer_view_desc buffer_view_desc;
     uint32_t index_count;
@@ -350,20 +318,12 @@ typedef struct aprend_storage_buffer_t
 #if _DEBUG
     char *debug_name{nullptr};
 #endif
-    aprend_buffer_context context;
+aprend_storage_buffer_t() = default;
+~aprend_storage_buffer_t();
+    spudgpu_buffer buffer;
     spudgpu_buffer_view buffer_view;
     spudgpu_buffer_view_desc buffer_view_desc;
     uint64_t size;
 } aprend_storage_buffer_t;
-
-typedef struct aprend_texture2d_t
-{
-#if _DEBUG
-    char *debug_name{nullptr};
-#endif
-    aprend_instance instance;
-    spudgpu_image image;
-    spudgpu_image_desc image_desc;
-} aprend_texture2d_t;
 
 #endif // APREND_INTERNAL_HPP
