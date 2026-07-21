@@ -25,6 +25,7 @@
 
 # Common build folders
 [Bb]uild/
+build-*/
 bin/
 obj/
 
