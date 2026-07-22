@@ -30,7 +30,9 @@ typedef struct apcad_solid_t {
 
 /* Newell's method — robust face normal for a planar (or near-planar) n-gon,
  * consistent with the CCW-outward winding used throughout this module. */
-inline glm::vec3 apcad_face_normal(const apcad_solid_t &solid, const apcad_face &face) {
+inline glm::vec3 apcad_face_normal(
+    const apcad_solid_t &solid,
+    const apcad_face &face) {
 	glm::vec3 normal(0.0f);
 	uint32_t count = (uint32_t)face.indices.size();
 	for (uint32_t i = 0; i < count; ++i) {

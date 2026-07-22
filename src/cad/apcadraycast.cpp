@@ -5,12 +5,19 @@
 #include <cstdint>
 #include <limits>
 
-bool apcad_solid_raycast(apcad_solid solid, apcad_ray ray, apcad_raycast_hit *out_hit) {
+// --------------------------
+// PUBLIC API
+extern "C" {
+
+bool apcad_solid_raycast(
+    apcad_solid solid,
+    apcad_ray ray,
+    apcad_raycast_hit *out_hit) {
 	if (!solid)
 		return false;
 
 	glm::vec3 origin = to_glm(ray.origin);
-	glm::vec3 dir     = glm::normalize(to_glm(ray.direction));
+	glm::vec3 dir    = glm::normalize(to_glm(ray.direction));
 
 	float best_t          = std::numeric_limits<float>::max();
 	uint32_t best_face    = UINT32_MAX;
@@ -76,3 +83,5 @@ bool apcad_solid_raycast(apcad_solid solid, apcad_ray ray, apcad_raycast_hit *ou
 	}
 	return true;
 }
+
+} // Extern "C"

@@ -34,14 +34,39 @@ typedef struct aprend_framebuffer_desc {
 } aprend_framebuffer_desc;
 
 typedef struct aprend_framebuffer_t *aprend_framebuffer;
-aprend_framebuffer aprend_framebuffer_create(aprend_instance instance, const aprend_framebuffer_desc *desc);
+aprend_framebuffer aprend_framebuffer_create(
+    aprend_instance instance,
+    const aprend_framebuffer_desc *desc);
 void aprend_framebuffer_destroy(aprend_framebuffer framebuffer);
-bool aprend_framebuffer_get_desc(aprend_framebuffer framebuffer, aprend_framebuffer_desc *out_desc);
-bool aprend_framebuffer_resize(aprend_framebuffer framebuffer,uint32_t width, uint32_t height);
-bool aprend_framebuffer_read_pixel(aprend_framebuffer framebuffer,uint32_t attachment_index, uint32_t x, uint32_t y, void *out_data, uint64_t data_size);
-bool aprend_framebuffer_clear_colors(aprend_framebuffer framebuffer, float r, float g, float b, float a);
-bool aprend_framebuffer_clear_depth(aprend_framebuffer framebuffer, bool clear_depth, bool clear_stencil, float depth, uint32_t stencil);
-aprend_texture2d aprend_framebuffer_get_color_attachment_texture(aprend_framebuffer framebuffer, uint32_t index);
+bool aprend_framebuffer_get_desc(
+    aprend_framebuffer framebuffer,
+    aprend_framebuffer_desc *out_desc);
+bool aprend_framebuffer_resize(
+    aprend_framebuffer framebuffer,
+    uint32_t width,
+    uint32_t height);
+bool aprend_framebuffer_read_pixel(
+    aprend_framebuffer framebuffer,
+    uint32_t attachment_index,
+    uint32_t x,
+    uint32_t y,
+    void *out_data,
+    uint64_t data_size);
+bool aprend_framebuffer_clear_colors(
+    aprend_framebuffer framebuffer,
+    float r,
+    float g,
+    float b,
+    float a);
+bool aprend_framebuffer_clear_depth(
+    aprend_framebuffer framebuffer,
+    bool clear_depth,
+    bool clear_stencil,
+    float depth,
+    uint32_t stencil);
+aprend_texture2d aprend_framebuffer_get_color_attachment_texture(
+    aprend_framebuffer framebuffer,
+    uint32_t index);
 aprend_texture2d aprend_framebuffer_get_depth_attachment_texture(aprend_framebuffer framebuffer);
 
 #if __cplusplus

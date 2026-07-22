@@ -19,7 +19,10 @@ apcad_solid_t *solid_alloc() {
 	return new (solid) apcad_solid_t();
 }
 
-void add_face(apcad_solid_t &solid, const ApriVec3 *points, uint32_t count) {
+void add_face(
+    apcad_solid_t &solid,
+    const ApriVec3 *points,
+    uint32_t count) {
 	apcad_face face;
 	uint32_t base = (uint32_t)solid.vertices.size();
 	face.indices.reserve(count);
@@ -32,7 +35,11 @@ void add_face(apcad_solid_t &solid, const ApriVec3 *points, uint32_t count) {
 
 /* Parallelogram face: corner, corner+u, corner+u+v, corner+v.
  * Callers pick u/v so that cross(u, v) is the outward normal. */
-void add_quad(apcad_solid_t &solid, ApriVec3 corner, ApriVec3 u, ApriVec3 v) {
+void add_quad(
+    apcad_solid_t &solid,
+    ApriVec3 corner,
+    ApriVec3 u,
+    ApriVec3 v) {
 	glm::vec3 c = to_glm(corner), gu = to_glm(u), gv = to_glm(v);
 	ApriVec3 pts[4] = {
 	    from_glm(c),
@@ -45,7 +52,14 @@ void add_quad(apcad_solid_t &solid, ApriVec3 corner, ApriVec3 u, ApriVec3 v) {
 
 } // namespace
 
-apcad_solid apcad_box_create(float width, float height, float depth) {
+// -------------------------
+// PUBLIC API
+extern "C" {
+
+apcad_solid apcad_box_create(
+    float width,
+    float height,
+    float depth) {
 	apcad_solid_t *solid = solid_alloc();
 	if (!solid)
 		return nullptr;
@@ -64,7 +78,10 @@ apcad_solid apcad_box_create(float width, float height, float depth) {
 	return solid;
 }
 
-apcad_solid apcad_cylinder_create(float radius, float height, uint32_t segments) {
+apcad_solid apcad_cylinder_create(
+    float radius,
+    float height,
+    uint32_t segments) {
 	if (segments < 3)
 		segments = 3;
 
@@ -100,7 +117,10 @@ apcad_solid apcad_cylinder_create(float radius, float height, uint32_t segments)
 	return solid;
 }
 
-apcad_solid apcad_sphere_create(float radius, uint32_t segments, uint32_t rings) {
+apcad_solid apcad_sphere_create(
+    float radius,
+    uint32_t segments,
+    uint32_t rings) {
 	if (segments < 3)
 		segments = 3;
 	if (rings < 2)
@@ -147,7 +167,10 @@ apcad_solid apcad_sphere_create(float radius, uint32_t segments, uint32_t rings)
 	return solid;
 }
 
-apcad_solid apcad_extrude_create(const ApriVec2 *polygon, uint32_t point_count, float height) {
+apcad_solid apcad_extrude_create(
+    const ApriVec2 *polygon,
+    uint32_t point_count,
+    float height) {
 	if (!polygon || point_count < 3)
 		return nullptr;
 
@@ -184,7 +207,9 @@ void apcad_solid_destroy(apcad_solid solid) {
 	free(solid);
 }
 
-void apcad_solid_tessellate(apcad_solid solid, aprend_mesh mesh) {
+void apcad_solid_tessellate(
+    apcad_solid solid,
+    aprend_mesh mesh) {
 	if (!solid || !mesh)
 		return;
 
@@ -238,3 +263,5 @@ void apcad_solid_tessellate(apcad_solid solid, aprend_mesh mesh) {
 	aprend_mesh_set_indices(mesh, APREND_INDEX_STRIDE_UINT32, (uint32_t)indices.size(), indices.data());
 	aprend_mesh_upload(mesh);
 }
+
+} // Extern "C"

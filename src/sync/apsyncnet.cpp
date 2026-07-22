@@ -15,39 +15,56 @@
 
 namespace {
 
-void put_u32(std::vector<uint8_t> &buf, uint32_t v) {
+void put_u32(
+    std::vector<uint8_t> &buf,
+    uint32_t v) {
 	const uint8_t *p = reinterpret_cast<const uint8_t *>(&v);
 	buf.insert(buf.end(), p, p + sizeof(v));
 }
-void put_u64(std::vector<uint8_t> &buf, uint64_t v) {
+void put_u64(
+    std::vector<uint8_t> &buf,
+    uint64_t v) {
 	const uint8_t *p = reinterpret_cast<const uint8_t *>(&v);
 	buf.insert(buf.end(), p, p + sizeof(v));
 }
-void put_f32(std::vector<uint8_t> &buf, float v) {
+void put_f32(
+    std::vector<uint8_t> &buf,
+    float v) {
 	const uint8_t *p = reinterpret_cast<const uint8_t *>(&v);
 	buf.insert(buf.end(), p, p + sizeof(v));
 }
-void put_f64(std::vector<uint8_t> &buf, double v) {
+void put_f64(
+    std::vector<uint8_t> &buf,
+    double v) {
 	const uint8_t *p = reinterpret_cast<const uint8_t *>(&v);
 	buf.insert(buf.end(), p, p + sizeof(v));
 }
-void put_dvec3(std::vector<uint8_t> &buf, const ApriDVec3 &v) {
+void put_dvec3(
+    std::vector<uint8_t> &buf,
+    const ApriDVec3 &v) {
 	put_f64(buf, v.x);
 	put_f64(buf, v.y);
 	put_f64(buf, v.z);
 }
-void put_quat(std::vector<uint8_t> &buf, const ApriQuat &v) {
+void put_quat(
+    std::vector<uint8_t> &buf,
+    const ApriQuat &v) {
 	put_f32(buf, v.x);
 	put_f32(buf, v.y);
 	put_f32(buf, v.z);
 	put_f32(buf, v.w);
 }
-void put_vec3(std::vector<uint8_t> &buf, const ApriVec3 &v) {
+void put_vec3(
+    std::vector<uint8_t> &buf,
+    const ApriVec3 &v) {
 	put_f32(buf, v.x);
 	put_f32(buf, v.y);
 	put_f32(buf, v.z);
 }
-void put_bytes(std::vector<uint8_t> &buf, const void *data, uint64_t size) {
+void put_bytes(
+    std::vector<uint8_t> &buf,
+    const void *data,
+    uint64_t size) {
 	const uint8_t *p = reinterpret_cast<const uint8_t *>(data);
 	buf.insert(buf.end(), p, p + size);
 }
@@ -62,49 +79,52 @@ struct reader {
 	uint64_t pos{0};
 
 	bool get_u32(uint32_t *out) {
-		if (pos + sizeof(uint32_t) > size) return false;
+		if (pos + sizeof(uint32_t) > size)
+			return false;
 		std::memcpy(out, data + pos, sizeof(uint32_t));
 		pos += sizeof(uint32_t);
 		return true;
 	}
 	bool get_u64(uint64_t *out) {
-		if (pos + sizeof(uint64_t) > size) return false;
+		if (pos + sizeof(uint64_t) > size)
+			return false;
 		std::memcpy(out, data + pos, sizeof(uint64_t));
 		pos += sizeof(uint64_t);
 		return true;
 	}
 	bool get_f32(float *out) {
-		if (pos + sizeof(float) > size) return false;
+		if (pos + sizeof(float) > size)
+			return false;
 		std::memcpy(out, data + pos, sizeof(float));
 		pos += sizeof(float);
 		return true;
 	}
 	bool get_f64(double *out) {
-		if (pos + sizeof(double) > size) return false;
+		if (pos + sizeof(double) > size)
+			return false;
 		std::memcpy(out, data + pos, sizeof(double));
 		pos += sizeof(double);
 		return true;
 	}
-	bool get_dvec3(ApriDVec3 *out) {
-		return get_f64(&out->x) && get_f64(&out->y) && get_f64(&out->z);
-	}
-	bool get_quat(ApriQuat *out) {
-		return get_f32(&out->x) && get_f32(&out->y) && get_f32(&out->z) && get_f32(&out->w);
-	}
-	bool get_vec3(ApriVec3 *out) {
-		return get_f32(&out->x) && get_f32(&out->y) && get_f32(&out->z);
-	}
+	bool get_dvec3(ApriDVec3 *out) { return get_f64(&out->x) && get_f64(&out->y) && get_f64(&out->z); }
+	bool get_quat(ApriQuat *out) { return get_f32(&out->x) && get_f32(&out->y) && get_f32(&out->z) && get_f32(&out->w); }
+	bool get_vec3(ApriVec3 *out) { return get_f32(&out->x) && get_f32(&out->y) && get_f32(&out->z); }
 	// Returns a pointer into `data` (not a copy); only valid as long as
 	// `data` is.
-	bool get_bytes(uint64_t byte_count, const uint8_t **out) {
-		if (pos + byte_count > size) return false;
+	bool get_bytes(
+	    uint64_t byte_count,
+	    const uint8_t **out) {
+		if (pos + byte_count > size)
+			return false;
 		*out = data + pos;
 		pos += byte_count;
 		return true;
 	}
 };
 
-void encode_node_entry(std::vector<uint8_t> &buf, const apsync_node_entry &e) {
+void encode_node_entry(
+    std::vector<uint8_t> &buf,
+    const apsync_node_entry &e) {
 	put_u64(buf, e.node_id);
 	put_dvec3(buf, e.last_translation);
 	put_quat(buf, e.last_rotation);
@@ -116,16 +136,26 @@ void encode_node_entry(std::vector<uint8_t> &buf, const apsync_node_entry &e) {
 // Fills every field except `node`, which the caller creates. false means
 // the payload was truncated/malformed.
 bool decode_node_entry(
-    reader &r, uint64_t *node_id, ApriDVec3 *translation, ApriQuat *rotation,
-    ApriVec3 *scale, std::vector<uint8_t> *blob) {
-	uint64_t blob_size = 0;
+    reader &r,
+    uint64_t *node_id,
+    ApriDVec3 *translation,
+    ApriQuat *rotation,
+    ApriVec3 *scale,
+    std::vector<uint8_t> *blob) {
+	uint64_t blob_size      = 0;
 	const uint8_t *blob_ptr = nullptr;
-	if (!r.get_u64(node_id)) return false;
-	if (!r.get_dvec3(translation)) return false;
-	if (!r.get_quat(rotation)) return false;
-	if (!r.get_vec3(scale)) return false;
-	if (!r.get_u64(&blob_size)) return false;
-	if (!r.get_bytes(blob_size, &blob_ptr)) return false;
+	if (!r.get_u64(node_id))
+		return false;
+	if (!r.get_dvec3(translation))
+		return false;
+	if (!r.get_quat(rotation))
+		return false;
+	if (!r.get_vec3(scale))
+		return false;
+	if (!r.get_u64(&blob_size))
+		return false;
+	if (!r.get_bytes(blob_size, &blob_ptr))
+		return false;
 	blob->assign(blob_ptr, blob_ptr + blob_size);
 	return true;
 }
@@ -139,7 +169,10 @@ std::vector<uint8_t> encode_snapshot(const apsync_session_t *session) {
 }
 
 std::vector<uint8_t> encode_transform_update(
-    uint64_t node_id, const ApriDVec3 &t, const ApriQuat &r, const ApriVec3 &s) {
+    uint64_t node_id,
+    const ApriDVec3 &t,
+    const ApriQuat &r,
+    const ApriVec3 &s) {
 	std::vector<uint8_t> buf;
 	put_u64(buf, node_id);
 	put_dvec3(buf, t);
@@ -156,9 +189,12 @@ std::vector<uint8_t> encode_transform_update(
 // (accept -> send snapshot, connect -> receive snapshot), never on the
 // per-frame non-blocking path.
 
-bool send_exact_blocking(spudnet_socket sock, const void *data, uint64_t size) {
+bool send_exact_blocking(
+    spudnet_socket sock,
+    const void *data,
+    uint64_t size) {
 	uint64_t sent_total = 0;
-	const uint8_t *src = (const uint8_t *)data;
+	const uint8_t *src  = (const uint8_t *)data;
 	while (sent_total < size) {
 		uint64_t sent = 0;
 		if (spudnet_send(sock, src + sent_total, size - sent_total, &sent) != SPUD_SUCCESS)
@@ -168,29 +204,39 @@ bool send_exact_blocking(spudnet_socket sock, const void *data, uint64_t size) {
 	return true;
 }
 
-bool recv_exact_blocking(spudnet_socket sock, void *data, uint64_t size) {
+bool recv_exact_blocking(
+    spudnet_socket sock,
+    void *data,
+    uint64_t size) {
 	uint64_t received_total = 0;
-	uint8_t *dst = (uint8_t *)data;
+	uint8_t *dst            = (uint8_t *)data;
 	while (received_total < size) {
 		uint64_t received = 0;
 		if (spudnet_recv(sock, dst + received_total, size - received_total, &received) != SPUD_SUCCESS)
 			return false;
-		if (received == 0) return false; // peer closed mid-message
+		if (received == 0)
+			return false; // peer closed mid-message
 		received_total += received;
 	}
 	return true;
 }
 
-bool send_message_blocking(spudnet_socket sock, uint32_t type, const std::vector<uint8_t> &payload) {
+bool send_message_blocking(
+    spudnet_socket sock,
+    uint32_t type,
+    const std::vector<uint8_t> &payload) {
 	uint32_t payload_size = (uint32_t)payload.size();
-	return send_exact_blocking(sock, &type, sizeof(type)) &&
-	       send_exact_blocking(sock, &payload_size, sizeof(payload_size)) &&
+	return send_exact_blocking(sock, &type, sizeof(type)) && send_exact_blocking(sock, &payload_size, sizeof(payload_size)) &&
 	       (payload.empty() || send_exact_blocking(sock, payload.data(), payload.size()));
 }
 
-bool recv_message_blocking(spudnet_socket sock, uint32_t *out_type, std::vector<uint8_t> *out_payload) {
+bool recv_message_blocking(
+    spudnet_socket sock,
+    uint32_t *out_type,
+    std::vector<uint8_t> *out_payload) {
 	uint32_t header[2];
-	if (!recv_exact_blocking(sock, header, sizeof(header))) return false;
+	if (!recv_exact_blocking(sock, header, sizeof(header)))
+		return false;
 	*out_type = header[0];
 	out_payload->resize(header[1]);
 	if (header[1] > 0 && !recv_exact_blocking(sock, out_payload->data(), header[1]))
@@ -204,7 +250,10 @@ bool recv_message_blocking(spudnet_socket sock, uint32_t *out_type, std::vector<
 // one), but a slow reader's socket send buffer filling up mid-snapshot-
 // relay is a real risk a production version would want a per-peer
 // outgoing queue for instead of dropping.
-void send_message_nonblocking(spudnet_socket sock, uint32_t type, const std::vector<uint8_t> &payload) {
+void send_message_nonblocking(
+    spudnet_socket sock,
+    uint32_t type,
+    const std::vector<uint8_t> &payload) {
 	std::vector<uint8_t> full;
 	put_u32(full, type);
 	put_u32(full, (uint32_t)payload.size());
@@ -224,14 +273,20 @@ void send_message_nonblocking(spudnet_socket sock, uint32_t type, const std::vec
 // buffered. Returns false if the connection died (closed cleanly or
 // errored) -- the caller drops the peer in that case.
 bool pump_peer_messages(
-    apsync_peer &peer, std::vector<std::pair<uint32_t, std::vector<uint8_t>>> &out_messages) {
+    apsync_peer &peer,
+    std::vector<std::pair<
+        uint32_t,
+        std::vector<uint8_t>>> &out_messages) {
 	uint8_t chunk[4096];
 	for (;;) {
 		uint64_t received = 0;
-		SPUDRESULT r = spudnet_recv(peer.socket, chunk, sizeof(chunk), &received);
-		if (r == SPUDRESULT_SNET_WOULD_BLOCK) break;
-		if (r != SPUD_SUCCESS) return false;
-		if (received == 0) return false; // peer closed cleanly
+		SPUDRESULT r      = spudnet_recv(peer.socket, chunk, sizeof(chunk), &received);
+		if (r == SPUDRESULT_SNET_WOULD_BLOCK)
+			break;
+		if (r != SPUD_SUCCESS)
+			return false;
+		if (received == 0)
+			return false; // peer closed cleanly
 		peer.recv_buffer.insert(peer.recv_buffer.end(), chunk, chunk + received);
 	}
 
@@ -243,11 +298,7 @@ bool pump_peer_messages(
 		if (peer.recv_buffer.size() - offset < 8ull + payload_size)
 			break; // message not fully buffered yet -- wait for the next poll
 
-		out_messages.emplace_back(
-		    type,
-		    std::vector<uint8_t>(
-		        peer.recv_buffer.begin() + offset + 8,
-		        peer.recv_buffer.begin() + offset + 8 + payload_size));
+		out_messages.emplace_back(type, std::vector<uint8_t>(peer.recv_buffer.begin() + offset + 8, peer.recv_buffer.begin() + offset + 8 + payload_size));
 		offset += 8 + payload_size;
 	}
 	if (offset > 0)
@@ -256,18 +307,25 @@ bool pump_peer_messages(
 	return true;
 }
 
-aprend_node create_synced_node(apsync_session_t *session, uint64_t node_id) {
+aprend_node create_synced_node(
+    apsync_session_t *session,
+    uint64_t node_id) {
 	return aprend_node_create(session->scene, ("apsync_node_" + std::to_string(node_id)).c_str());
 }
 
 } // namespace
 
+extern "C" {
+
 // ============================================================
 // Public API
 // ============================================================
 
-apsync_session apsync_host_create(aprend_scene scene, uint16_t port) {
-	if (!scene) return nullptr;
+apsync_session apsync_host_create(
+    aprend_scene scene,
+    uint16_t port) {
+	if (!scene)
+		return nullptr;
 
 	spudnet_socket listen_sock = nullptr;
 	if (spudnet_listen_create(port, &listen_sock) != SPUD_SUCCESS)
@@ -282,9 +340,13 @@ apsync_session apsync_host_create(aprend_scene scene, uint16_t port) {
 }
 
 apsync_session apsync_join(
-    aprend_scene scene, const char *host, uint16_t port,
-    apsync_attach_content attach_content, void *user_data) {
-	if (!scene || !host || !attach_content) return nullptr;
+    aprend_scene scene,
+    const char *host,
+    uint16_t port,
+    apsync_attach_content attach_content,
+    void *user_data) {
+	if (!scene || !host || !attach_content)
+		return nullptr;
 
 	spudnet_socket sock = nullptr;
 	if (spudnet_connect(host, port, &sock) != SPUD_SUCCESS)
@@ -299,12 +361,12 @@ apsync_session apsync_join(
 		return nullptr;
 	}
 
-	apsync_session_t *session          = new apsync_session_t();
-	session->role                      = APSYNC_ROLE_CLIENT;
-	session->scene                     = scene;
-	session->attach_content            = attach_content;
-	session->attach_content_user_data  = user_data;
-	session->next_node_id              = (uint64_t)1 << 63; // see apsync_internal.hpp
+	apsync_session_t *session         = new apsync_session_t();
+	session->role                     = APSYNC_ROLE_CLIENT;
+	session->scene                    = scene;
+	session->attach_content           = attach_content;
+	session->attach_content_user_data = user_data;
+	session->next_node_id             = (uint64_t)1 << 63; // see apsync_internal.hpp
 
 	reader r{payload.data(), payload.size()};
 	uint32_t node_count = 0;
@@ -342,9 +404,12 @@ apsync_session apsync_join(
 }
 
 uint64_t apsync_register_node(
-    apsync_session session, aprend_node node,
-    const void *solid_blob, uint64_t solid_blob_size) {
-	if (!session || !node) return 0;
+    apsync_session session,
+    aprend_node node,
+    const void *solid_blob,
+    uint64_t solid_blob_size) {
+	if (!session || !node)
+		return 0;
 
 	apsync_node_entry entry;
 	entry.node_id          = session->next_node_id++;
@@ -352,8 +417,7 @@ uint64_t apsync_register_node(
 	entry.last_translation = aprend_node_get_translation(node);
 	entry.last_rotation    = aprend_node_get_rotation(node);
 	entry.last_scale       = aprend_node_get_scale(node);
-	entry.solid_blob.assign(
-	    (const uint8_t *)solid_blob, (const uint8_t *)solid_blob + solid_blob_size);
+	entry.solid_blob.assign((const uint8_t *)solid_blob, (const uint8_t *)solid_blob + solid_blob_size);
 
 	// Only the host can introduce a node the rest of the session learns
 	// about -- see the note on apsync_register_node in apsyncnet.h.
@@ -369,20 +433,26 @@ uint64_t apsync_register_node(
 	return node_id;
 }
 
-void apsync_unregister_node(apsync_session session, uint64_t node_id) {
-	if (!session) return;
+void apsync_unregister_node(
+    apsync_session session,
+    uint64_t node_id) {
+	if (!session)
+		return;
 	session->nodes.erase(node_id);
 }
 
 void apsync_poll(apsync_session session) {
-	if (!session) return;
+	if (!session)
+		return;
 
 	if (session->role == APSYNC_ROLE_HOST) {
 		for (;;) {
 			spudnet_socket client_sock = nullptr;
-			SPUDRESULT r = spudnet_accept(session->listen_socket, &client_sock);
-			if (r == SPUDRESULT_SNET_WOULD_BLOCK) break;
-			if (r != SPUD_SUCCESS) break; // listen socket unusable this frame
+			SPUDRESULT r               = spudnet_accept(session->listen_socket, &client_sock);
+			if (r == SPUDRESULT_SNET_WOULD_BLOCK)
+				break;
+			if (r != SPUD_SUCCESS)
+				break; // listen socket unusable this frame
 
 			// Blocking for this one-time send -- see the note on
 			// send_message_nonblocking above for why a slow joiner here is
@@ -411,8 +481,7 @@ void apsync_poll(apsync_session session) {
 				ApriDVec3 translation{};
 				ApriQuat rotation{};
 				ApriVec3 scale{};
-				if (!r.get_u64(&node_id) || !r.get_dvec3(&translation) ||
-				    !r.get_quat(&rotation) || !r.get_vec3(&scale))
+				if (!r.get_u64(&node_id) || !r.get_dvec3(&translation) || !r.get_quat(&rotation) || !r.get_vec3(&scale))
 					continue; // malformed -- ignore, keep the connection
 
 				auto it = session->nodes.find(node_id);
@@ -428,12 +497,10 @@ void apsync_poll(apsync_session session) {
 				entry.last_scale       = scale;
 
 				if (session->role == APSYNC_ROLE_HOST) {
-					std::vector<uint8_t> relay =
-					    encode_transform_update(node_id, translation, rotation, scale);
+					std::vector<uint8_t> relay = encode_transform_update(node_id, translation, rotation, scale);
 					for (size_t j = 0; j < session->peers.size(); ++j)
 						if (j != i)
-							send_message_nonblocking(
-							    session->peers[j].socket, APSYNC_MSG_TRANSFORM_UPDATE, relay);
+							send_message_nonblocking(session->peers[j].socket, APSYNC_MSG_TRANSFORM_UPDATE, relay);
 				}
 			} else if (msg.first == APSYNC_MSG_NODE_ADDED && session->role == APSYNC_ROLE_CLIENT) {
 				uint64_t node_id = 0;
@@ -468,15 +535,15 @@ void apsync_poll(apsync_session session) {
 	}
 
 	for (auto &kv : session->nodes) {
-		apsync_node_entry &entry   = kv.second;
-		ApriDVec3 translation      = aprend_node_get_translation(entry.node);
-		ApriQuat rotation          = aprend_node_get_rotation(entry.node);
-		ApriVec3 scale             = aprend_node_get_scale(entry.node);
+		apsync_node_entry &entry = kv.second;
+		ApriDVec3 translation    = aprend_node_get_translation(entry.node);
+		ApriQuat rotation        = aprend_node_get_rotation(entry.node);
+		ApriVec3 scale           = aprend_node_get_scale(entry.node);
 
 		bool changed = std::memcmp(&translation, &entry.last_translation, sizeof(translation)) != 0 ||
-		               std::memcmp(&rotation, &entry.last_rotation, sizeof(rotation)) != 0 ||
-		               std::memcmp(&scale, &entry.last_scale, sizeof(scale)) != 0;
-		if (!changed) continue;
+		               std::memcmp(&rotation, &entry.last_rotation, sizeof(rotation)) != 0 || std::memcmp(&scale, &entry.last_scale, sizeof(scale)) != 0;
+		if (!changed)
+			continue;
 
 		entry.last_translation = translation;
 		entry.last_rotation    = rotation;
@@ -489,14 +556,21 @@ void apsync_poll(apsync_session session) {
 }
 
 bool apsync_is_connected(apsync_session session) {
-	if (!session) return false;
-	if (session->role == APSYNC_ROLE_HOST) return session->listen_socket != nullptr;
+	if (!session)
+		return false;
+	if (session->role == APSYNC_ROLE_HOST)
+		return session->listen_socket != nullptr;
 	return session->connected;
 }
 
 void apsync_session_destroy(apsync_session session) {
-	if (!session) return;
-	if (session->listen_socket) spudnet_close(session->listen_socket);
-	for (auto &peer : session->peers) spudnet_close(peer.socket);
+	if (!session)
+		return;
+	if (session->listen_socket)
+		spudnet_close(session->listen_socket);
+	for (auto &peer : session->peers)
+		spudnet_close(peer.socket);
 	delete session;
 }
+
+} // Extern "C"

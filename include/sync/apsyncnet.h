@@ -50,7 +50,9 @@ typedef void (*apsync_attach_content)(
 /* Binds a listening socket on `port`. Nodes registered on `scene` before
  * or after this call (via apsync_register_node) are what gets sent to
  * anyone who joins. NULL on failure (see spudnet_listen_create). */
-apsync_session apsync_host_create(aprend_scene scene, uint16_t port);
+apsync_session apsync_host_create(
+    aprend_scene scene,
+    uint16_t port);
 
 /*
  * Client  —  joins a running host.
@@ -89,7 +91,9 @@ uint64_t apsync_register_node(
     const void *solid_blob,
     uint64_t solid_blob_size);
 
-void apsync_unregister_node(apsync_session session, uint64_t node_id);
+void apsync_unregister_node(
+    apsync_session session,
+    uint64_t node_id);
 
 /* Call once per frame, host or client alike. Non-blocking — safe from a
  * render loop. Host: accepts new connections and snapshots them, applies
