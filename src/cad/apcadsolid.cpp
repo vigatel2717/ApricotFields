@@ -12,11 +12,11 @@ namespace {
 constexpr float k_two_pi = 6.28318530717958647692f;
 constexpr float k_pi     = 3.14159265358979323846f;
 
-apcad_solid_t *solid_alloc() {
-	auto *solid = (apcad_solid_t *)malloc(sizeof(apcad_solid_t));
-	if (!solid)
-		return nullptr;
-	return new (solid) apcad_solid_t();
+static inline apcad_solid_t *solid_alloc() {
+	apcad_solid_t *solid = (apcad_solid_t *)malloc(sizeof(apcad_solid_t));
+	if (solid)
+		solid = new (solid) apcad_solid_t();
+	return solid;
 }
 
 void add_face(
@@ -201,10 +201,10 @@ apcad_solid apcad_extrude_create(
 }
 
 void apcad_solid_destroy(apcad_solid solid) {
-	if (!solid)
-		return;
-	solid->~apcad_solid_t();
-	free(solid);
+	if (solid) {
+		solid->~apcad_solid_t();
+		free(solid);
+	}
 }
 
 void apcad_solid_tessellate(

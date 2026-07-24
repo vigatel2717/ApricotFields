@@ -78,7 +78,8 @@ uint32_t aprend_uniform_type_get_size(APREND_UNIFORM_TYPE type);
 typedef struct aprend_uniform {
 	const char *name;
 	APREND_UNIFORM_TYPE type;
-	uint32_t size, offset;
+	uint32_t size; /* array element count, NOT a byte size; use 1 (or 0) for a non-array uniform */
+	uint32_t offset;
 } aprend_uniform;
 
 typedef struct aprend_uniform_layout {

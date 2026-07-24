@@ -67,7 +67,7 @@ extern "C" {
 aprend_framebuffer aprend_framebuffer_create(
     aprend_instance instance,
     const aprend_framebuffer_desc *desc) {
-	if (!(instance && desc))
+	if (!instance || !desc)
 		return nullptr;
 	if (!(desc->width && desc->height && desc->attachment_count && desc->attachments))
 		return nullptr;

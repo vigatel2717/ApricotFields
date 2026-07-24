@@ -313,6 +313,15 @@ aprend_node create_synced_node(
 	return aprend_node_create(session->scene, ("apsync_node_" + std::to_string(node_id)).c_str());
 }
 
+// Destroys every node apsync created itself to mirror a remote one (see
+// apsync_node_entry::owned_by_apsync). Nodes the caller registered via
+// apsync_register_node are left alone -- the caller still owns those.
+void destroy_owned_nodes(apsync_session_t *session) {
+	for (auto &kv : session->nodes)
+		if (kv.second.owned_by_apsync)
+			aprend_node_destroy(kv.second.node);
+}
+
 } // namespace
 
 extern "C" {
@@ -332,10 +341,16 @@ apsync_session apsync_host_create(
 		return nullptr;
 	spudnet_set_blocking(listen_sock, false);
 
-	apsync_session_t *session = new apsync_session_t();
-	session->role             = APSYNC_ROLE_HOST;
-	session->scene            = scene;
-	session->listen_socket    = listen_sock;
+	apsync_session_t *session = (apsync_session_t *)malloc(sizeof(apsync_session_t));
+	if (session) {
+		session = new (session) apsync_session_t();
+	} else {
+		spudnet_close(listen_sock);
+		return nullptr;
+	}
+	session->role          = APSYNC_ROLE_HOST;
+	session->scene         = scene;
+	session->listen_socket = listen_sock;
 	return session;
 }
 
@@ -361,7 +376,13 @@ apsync_session apsync_join(
 		return nullptr;
 	}
 
-	apsync_session_t *session         = new apsync_session_t();
+	apsync_session_t *session = (apsync_session_t *)malloc(sizeof(apsync_session_t));
+	if (session) {
+		session = new (session) apsync_session_t();
+	} else {
+		spudnet_close(sock);
+		return nullptr;
+	}
 	session->role                     = APSYNC_ROLE_CLIENT;
 	session->scene                    = scene;
 	session->attach_content           = attach_content;
@@ -371,9 +392,7 @@ apsync_session apsync_join(
 	reader r{payload.data(), payload.size()};
 	uint32_t node_count = 0;
 	if (!r.get_u32(&node_count)) {
-		spudnet_close(sock);
-		delete session;
-		return nullptr;
+		goto failedattempt;
 	}
 
 	for (uint32_t i = 0; i < node_count; ++i) {
@@ -383,9 +402,7 @@ apsync_session apsync_join(
 		ApriVec3 scale{};
 		std::vector<uint8_t> blob;
 		if (!decode_node_entry(r, &node_id, &translation, &rotation, &scale, &blob)) {
-			spudnet_close(sock);
-			delete session;
-			return nullptr;
+			goto failedattempt;
 		}
 
 		aprend_node node = create_synced_node(session, node_id);
@@ -395,12 +412,19 @@ apsync_session apsync_join(
 		attach_content(user_data, node, blob.data(), blob.size());
 
 		apsync_node_entry entry{node_id, node, translation, rotation, scale, std::move(blob)};
+		entry.owned_by_apsync = true;
 		session->nodes.emplace(node_id, std::move(entry));
 	}
 
 	spudnet_set_blocking(sock, false);
 	session->peers.push_back({sock, {}});
 	return session;
+failedattempt:
+	spudnet_close(sock);
+	destroy_owned_nodes(session);
+	session->~apsync_session_t();
+	free(session);
+	return nullptr;
 }
 
 uint64_t apsync_register_node(
@@ -438,7 +462,12 @@ void apsync_unregister_node(
     uint64_t node_id) {
 	if (!session)
 		return;
-	session->nodes.erase(node_id);
+	auto it = session->nodes.find(node_id);
+	if (it == session->nodes.end())
+		return;
+	if (it->second.owned_by_apsync)
+		aprend_node_destroy(it->second.node);
+	session->nodes.erase(it);
 }
 
 void apsync_poll(apsync_session session) {
@@ -520,6 +549,7 @@ void apsync_poll(apsync_session session) {
 				session->attach_content(session->attach_content_user_data, node, blob.data(), blob.size());
 
 				apsync_node_entry entry{node_id, node, translation, rotation, scale, std::move(blob)};
+				entry.owned_by_apsync = true;
 				session->nodes.emplace(node_id, std::move(entry));
 			}
 		}
@@ -570,7 +600,9 @@ void apsync_session_destroy(apsync_session session) {
 		spudnet_close(session->listen_socket);
 	for (auto &peer : session->peers)
 		spudnet_close(peer.socket);
-	delete session;
+	destroy_owned_nodes(session);
+	session->~apsync_session_t();
+	free(session);
 }
 
 } // Extern "C"

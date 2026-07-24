@@ -16,12 +16,20 @@ add_library(ApricotFields STATIC
         src/cad/apcad_internal.hpp
         src/cad/apcadsolid.cpp
         src/cad/apcadraycast.cpp
+        src/cad/apcadtools.cpp
+        src/cad/apcadmesh.cpp
+        src/cad/apcadinference.cpp
+        src/cad/apcaddraw.cpp
         src/sync/apsync_internal.hpp
         src/sync/apsyncnet.cpp
         include/apricore.h
         include/cad/apcadbase.h
         include/cad/apcadsolid.h
         include/cad/apcadraycast.h
+        include/cad/apcadtools.h
+        include/cad/apcadmesh.h
+        include/cad/apcadinference.h
+        include/cad/apcaddraw.h
         include/render/aprendscene.h
         include/render/aprendbase.h
         include/render/aprendbuffers.h

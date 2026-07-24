@@ -20,7 +20,10 @@ static uint64_t aprend_texture2d_view_aspect_mask(SPUDGPU_FORMAT format) {
 	}
 }
 
-static uint32_t aprend_compute_mip_levels(uint32_t width, uint32_t height, uint32_t depth = 1) {
+static uint32_t aprend_compute_mip_levels(
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth = 1) {
 	uint32_t max_dim = width;
 	if (height > max_dim)
 		max_dim = height;
@@ -43,9 +46,13 @@ aprend_texture2d_t::~aprend_texture2d_t() {
 aprend_texture3d_t::~aprend_texture3d_t() { spudgpu_destroy_image(this->image); }
 
 extern "C" {
-aprend_texture2d aprend_texture2d_create(aprend_instance instance, const aprend_texture2d_desc *desc) {
+aprend_texture2d aprend_texture2d_create(
+    aprend_instance instance,
+    const aprend_texture2d_desc *desc) {
 	/* Implementation-specific texture creation logic goes here. */
-	if (!(instance && desc && desc->width && desc->height && desc->format))
+	if (!instance || !desc)
+		return nullptr;
+	if (!(desc->width && desc->height && desc->format))
 		return nullptr;
 	if (desc->sample_count > 1)
 		return nullptr; // MSAA not yet supported by SpudGPU
@@ -105,7 +112,9 @@ void aprend_texture2d_destroy(aprend_texture2d texture) {
 		free(texture);
 	}
 }
-bool aprend_texture2d_get_desc(aprend_texture2d texture, aprend_texture2d_desc *out_desc) {
+bool aprend_texture2d_get_desc(
+    aprend_texture2d texture,
+    aprend_texture2d_desc *out_desc) {
 	if (texture && out_desc) {
 		*out_desc = texture->desc;
 		return true;
@@ -114,7 +123,13 @@ bool aprend_texture2d_get_desc(aprend_texture2d texture, aprend_texture2d_desc *
 }
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) { return texture ? texture->image : nullptr; }
 spudgpu_image_view aprend_texture2d_get_spudgpu_image_view(aprend_texture2d texture) { return texture ? texture->image_view : nullptr; }
-bool aprend_texture2d_update(aprend_texture2d texture, uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height, void **ppData) {
+bool aprend_texture2d_update(
+    aprend_texture2d texture,
+    uint32_t x_offset,
+    uint32_t y_offset,
+    uint32_t width,
+    uint32_t height,
+    void **ppData) {
 	if (!(texture && width && height && ppData && *ppData))
 		return false;
 	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height)
@@ -174,8 +189,16 @@ bool aprend_texture2d_update(aprend_texture2d texture, uint32_t x_offset, uint32
 	spudgpu_destroy_buffer(staging_buffer);
 	return ok;
 }
-bool aprend_texture2d_get_data(aprend_texture2d texture, uint32_t x_offset, uint32_t y_offset, uint32_t width, uint32_t height, void **ppData) {
-	if (!(texture && width && height && ppData && *ppData))
+bool aprend_texture2d_get_data(
+    aprend_texture2d texture,
+    uint32_t x_offset,
+    uint32_t y_offset,
+    uint32_t width,
+    uint32_t height,
+    void **ppData) {
+	if (!(texture && width && height && ppData))
+		return false;
+	if (!(*ppData))
 		return false;
 	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height)
 		return false;
@@ -237,7 +260,10 @@ bool aprend_texture2d_get_data(aprend_texture2d texture, uint32_t x_offset, uint
 	spudgpu_destroy_buffer(staging_buffer);
 	return true;
 }
-bool aprend_texture2d_resize(aprend_texture2d texture, uint32_t new_width, uint32_t new_height) {
+bool aprend_texture2d_resize(
+    aprend_texture2d texture,
+    uint32_t new_width,
+    uint32_t new_height) {
 	if (!(texture && new_width && new_height))
 		return false;
 	if (new_width == texture->desc.width && new_height == texture->desc.height)
@@ -245,8 +271,10 @@ bool aprend_texture2d_resize(aprend_texture2d texture, uint32_t new_width, uint3
 	/* Implementation-specific texture resizing logic goes here. */
 	return false; // Not implemented yet
 }
-aprend_texture3d aprend_texture3d_create(aprend_instance instance, const aprend_texture3d_desc *desc) {
-	if (!(instance && desc))
+aprend_texture3d aprend_texture3d_create(
+    aprend_instance instance,
+    const aprend_texture3d_desc *desc) {
+	if (!instance || !desc)
 		return nullptr;
 	if (!(desc->width && desc->height && desc->depth && desc->format))
 		return nullptr;
@@ -290,7 +318,9 @@ void aprend_texture3d_destroy(aprend_texture3d texture) {
 		free(texture);
 	}
 }
-bool aprend_texture3d_get_desc(aprend_texture3d texture, aprend_texture3d_desc *out_desc) {
+bool aprend_texture3d_get_desc(
+    aprend_texture3d texture,
+    aprend_texture3d_desc *out_desc) {
 	if (texture && out_desc) {
 		*out_desc = texture->desc;
 		return true;
@@ -300,7 +330,14 @@ bool aprend_texture3d_get_desc(aprend_texture3d texture, aprend_texture3d_desc *
 spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture) { return texture ? texture->image_view : NULL; }
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture) { return texture ? texture->image : NULL; }
 bool aprend_texture3d_update(
-    aprend_texture3d texture, uint32_t x_offset, uint32_t y_offset, uint32_t z_offset, uint32_t width, uint32_t height, uint32_t depth, void **ppData) {
+    aprend_texture3d texture,
+    uint32_t x_offset,
+    uint32_t y_offset,
+    uint32_t z_offset,
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    void **ppData) {
 	if (!(texture && width && height && depth && ppData))
 		return false;
 	if (!(*ppData))
@@ -367,7 +404,14 @@ bool aprend_texture3d_update(
 	return ok;
 }
 bool aprend_texture3d_get_data(
-    aprend_texture3d texture, uint32_t x_offset, uint32_t y_offset, uint32_t z_offset, uint32_t width, uint32_t height, uint32_t depth, void **ppData) {
+    aprend_texture3d texture,
+    uint32_t x_offset,
+    uint32_t y_offset,
+    uint32_t z_offset,
+    uint32_t width,
+    uint32_t height,
+    uint32_t depth,
+    void **ppData) {
 	if (!(texture && width && height && depth && ppData))
 		return false;
 	if (!(*ppData))
@@ -436,7 +480,11 @@ bool aprend_texture3d_get_data(
 	spudgpu_destroy_buffer(staging_buffer);
 	return true;
 }
-bool aprend_texture3d_resize(aprend_texture3d texture, uint32_t new_width, uint32_t new_height, uint32_t new_depth) {
+bool aprend_texture3d_resize(
+    aprend_texture3d texture,
+    uint32_t new_width,
+    uint32_t new_height,
+    uint32_t new_depth) {
 	if (!(texture && new_width && new_height && new_depth))
 		return false;
 	if (new_width == texture->desc.width && new_height == texture->desc.height && new_depth == texture->desc.depth)

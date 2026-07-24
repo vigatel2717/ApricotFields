@@ -36,6 +36,12 @@ struct apsync_node_entry {
 	ApriQuat             last_rotation;
 	ApriVec3             last_scale;
 	std::vector<uint8_t> solid_blob;
+
+	/* True for a node apsync created itself to mirror one described by a
+	 * snapshot/NODE_ADDED message (create_synced_node) -- apsync owns its
+	 * lifecycle and must aprend_node_destroy it. False for a node passed
+	 * into apsync_register_node, which the caller created and still owns. */
+	bool owned_by_apsync{false};
 };
 
 /* One TCP connection. Host: one entry per connected client. Client:

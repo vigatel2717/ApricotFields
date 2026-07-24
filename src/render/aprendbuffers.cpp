@@ -61,15 +61,10 @@ aprend_buffer_context_create(aprend_instance instance, uint64_t initial_capacity
 	aprend_buffer_context_t *result = (aprend_buffer_context_t *)calloc(1, sizeof(aprend_buffer_context_t));
 	result->instance                = instance;
 
-	if (spudgpu_create_buffer(
-	        result->instance->desc.device,
-	        &(result->buffer_desc =
-	              {
-	                  .usage        = usage,
-	                  .memory_flags = flags,
-	                  .size         = initial_capacity,
-	              }),
-	        &result->buffer) != SPUD_SUCCESS) {
+	result->buffer_desc.usage        = usage;
+	result->buffer_desc.memory_flags = flags;
+	result->buffer_desc.size         = initial_capacity;
+	if (SPUDFAIL(spudgpu_create_buffer(result->instance->desc.device, &result->buffer_desc, &result->buffer))) {
 		free(result);
 		return nullptr;
 	}
@@ -123,7 +118,7 @@ uint32_t aprend_uniform_type_get_size(APREND_UNIFORM_TYPE type) {
 	}
 }
 aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, const aprend_uniform_layout *layout) {
-	if (!(instance && layout))
+	if (!instance || !layout)
 		return nullptr;
 	aprend_uniform_buffer_t *result = (aprend_uniform_buffer_t *)malloc(sizeof(aprend_uniform_buffer_t));
 	if (result)
@@ -140,10 +135,10 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 	result->total_size = 0;
 	for (size_t i = 0; i < layout->count; ++i) {
 		const aprend_uniform &u = layout->uniforms[i];
-		uint32_t uniform_size   = aprend_uniform_type_get_size(u.type) * u.size;
+		uint32_t element_count  = u.size ? u.size : 1; // u.size is an array element count, not a byte size; 0 means "not an array"
+		uint32_t uniform_size   = aprend_uniform_type_get_size(u.type) * element_count;
 		uint32_t padding        = (uniform_size % 16) ? (16 - (uniform_size % 16)) : 0; // std140-like alignment
-		result->buffer_view_desc.size += uniform_size + padding;
-		result->total_size += uniform_size;
+		result->total_size += uniform_size + padding;
 	}
 
 	{
@@ -172,21 +167,23 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 
 	return result;
 failedattempt:
-    printf(spudresult_str(sr));
+    printf("%s", spudresult_str(sr));
 	result->~aprend_uniform_buffer_t();
 	free(result);
 	return NULL;
 }
 void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer) {
-	if (!buffer)
-		return;
-	buffer->~aprend_uniform_buffer_t();
-	free(buffer);
+	if (buffer) {
+		buffer->~aprend_uniform_buffer_t();
+		free(buffer);
+	}
 }
 spudgpu_buffer_view aprend_uniform_buffer_get_spudgpu_buffer_view(aprend_uniform_buffer buffer) { return buffer ? buffer->buffer_view : NULL; }
 aprend_buffer_context aprend_uniform_buffer_get_buffer_context(aprend_uniform_buffer buffer) { return nullptr; }
 bool aprend_uniform_buffer_update(aprend_uniform_buffer buffer, uint32_t local_offset, uint32_t size, void *pData) {
-	if (!(buffer && size))
+	if (!buffer || !pData || size == 0)
+		return false;
+	if ((uint64_t)local_offset + size > buffer->total_size)
 		return false;
 	uint32_t byte_offset = buffer->buffer_view_desc.offset_from_parent_buffer + local_offset;
 	memcpy((uint8_t *)buffer->uniform_data_ptr + byte_offset, pData, size);
@@ -197,7 +194,9 @@ bool aprend_uniform_buffer_update_by_name(aprend_uniform_buffer buffer, const ch
 }
 
 uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout) {
-	if (!(layout && layout->elements))
+	if (!layout)
+		return 0;
+	if (!layout->elements)
 		return 0;
 	uint32_t total_size = 0;
 	for (uint32_t i = 0; i < layout->count; ++i) {
@@ -209,13 +208,13 @@ uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout)
 }
 
 aprend_vertex_buffer aprend_vertex_buffer_create(aprend_instance instance, const aprend_buffer_layout *vertex_layout, uint32_t vertex_count, void *pData) {
-	if (!(instance && vertex_layout && vertex_count))
-		return NULL;
+	if (!instance || !vertex_layout || vertex_count == 0)
+		return nullptr;
 	aprend_vertex_buffer_t *result = (aprend_vertex_buffer_t *)malloc(sizeof(aprend_vertex_buffer_t));
 	if (result)
 		result = new (result) aprend_vertex_buffer_t();
 	else
-		return NULL;
+		return nullptr;
 
 	result->vertex_count  = vertex_count;
 	result->vertex_stride = aprend_buffer_layout_get_total_size(vertex_layout);
@@ -259,10 +258,10 @@ aprend_vertex_buffer aprend_vertex_buffer_create(aprend_instance instance, const
 
 	return result;
 failedattempt:
-	printf(spudresult_str(sr));
+	printf("%s", spudresult_str(sr));
 	result->~aprend_vertex_buffer_t();
 	free(result);
-	return NULL;
+	return nullptr;
 }
 
 void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer) {
@@ -271,15 +270,15 @@ void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer) {
 	buffer->~aprend_vertex_buffer_t();
 	free(buffer);
 }
-spudgpu_buffer_view aprend_vertex_buffer_get_spudgpu_buffer_view(aprend_vertex_buffer buffer) { return buffer ? buffer->buffer_view : NULL; }
+spudgpu_buffer_view aprend_vertex_buffer_get_spudgpu_buffer_view(aprend_vertex_buffer buffer) { return buffer ? buffer->buffer_view : nullptr; }
 bool aprend_vertex_buffer_update(aprend_vertex_buffer buffer, uint32_t vertex_offset, uint32_t vertex_count, void *pData) {
-	if (!(buffer && vertex_count))
+	if (!buffer || vertex_count == 0)
 		return false;
 	uint32_t byte_offset = buffer->buffer_view_desc.offset_from_parent_buffer + (vertex_offset * buffer->vertex_stride);
 	uint32_t byte_size   = vertex_count * buffer->vertex_stride;
 
 	void *cpuAddress = nullptr;
-	if (spudgpu_map_buffer(buffer->buffer, byte_offset, byte_size, &cpuAddress) != SPUD_SUCCESS)
+	if (SPUDFAIL(spudgpu_map_buffer(buffer->buffer, byte_offset, byte_size, &cpuAddress)))
 		return false;
 	memcpy(cpuAddress, pData, byte_size);
 	spudgpu_unmap_buffer(buffer->buffer);
@@ -295,14 +294,14 @@ void aprend_vertex_buffer_get_layout(aprend_vertex_buffer buffer, aprend_buffer_
 }
 
 aprend_index_buffer aprend_index_buffer_create(aprend_instance instance, APREND_INDEX_STRIDE stride, uint32_t index_count, void *pData) {
-	if (!(instance && index_count))
-		return NULL;
+	if (!instance || index_count == 0)
+		return nullptr;
 
 	aprend_index_buffer_t *result = (aprend_index_buffer_t *)malloc(sizeof(aprend_index_buffer_t));
 	if (result)
 		result = new (result) aprend_index_buffer_t();
 	else
-		return NULL;
+		return nullptr;
 
 	result->index_count  = index_count;
 	result->index_stride = stride;
@@ -343,20 +342,20 @@ aprend_index_buffer aprend_index_buffer_create(aprend_instance instance, APREND_
 	return result;
 
 failedattempt:
-	printf(spudresult_str(sr));
+	printf("%s", spudresult_str(sr));
 	result->~aprend_index_buffer_t();
 	free(result);
-	return NULL;
+	return nullptr;
 }
 void aprend_index_buffer_destroy(aprend_index_buffer buffer) {
-	if (!buffer)
-		return;
-	buffer->~aprend_index_buffer_t();
-	free(buffer);
+	if (buffer) {
+		buffer->~aprend_index_buffer_t();
+		free(buffer);
+	}
 }
-spudgpu_buffer_view aprend_index_buffer_get_spudgpu_buffer_view(aprend_index_buffer buffer) { return buffer ? buffer->buffer_view : NULL; }
+spudgpu_buffer_view aprend_index_buffer_get_spudgpu_buffer_view(aprend_index_buffer buffer) { return buffer ? buffer->buffer_view : nullptr; }
 bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offset, uint32_t index_count, void *pData) {
-	if (!(buffer && index_count))
+	if (!buffer || index_count == 0)
 		return false;
 	uint32_t index_size  = buffer->index_stride;
 	uint32_t byte_offset = buffer->buffer_view_desc.offset_from_parent_buffer + (index_offset * index_size);
@@ -372,13 +371,13 @@ bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offse
 uint32_t aprend_index_buffer_get_format(aprend_index_buffer buffer) { return buffer ? buffer->index_stride : APREND_INDEX_STRIDE_NONE; }
 
 aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uint64_t size, void *pData) {
-	if (!(instance && size))
-		return NULL;
+	if (!instance || size == 0)
+		return nullptr;
 	aprend_storage_buffer_t *result = (aprend_storage_buffer_t *)malloc(sizeof(aprend_storage_buffer_t));
 	if (result)
 		result = new (result) aprend_storage_buffer_t();
 	else
-		return NULL;
+		return nullptr;
 
 	{
 		spudgpu_buffer_desc bd;
@@ -387,7 +386,7 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
 		bd.size         = size;
 		bd.usage        = SPUDGPU_BUFFER_USAGE_STORAGE;
-		if (spudgpu_create_buffer(instance->desc.device, &bd, &result->buffer) != SPUD_SUCCESS)
+		if (SPUDFAIL(spudgpu_create_buffer(instance->desc.device, &bd, &result->buffer)))
 			goto failedattempt;
 
 		result->buffer_view_desc.parent_buffer = result->buffer;
@@ -395,13 +394,12 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 		    0; // This will be set to the correct offset in the buffer when the buffer is allocated and assigned a GPU address.
 		result->buffer_view_desc.stride = 0;
 		result->buffer_view_desc.size   = size;
-		if (spudgpu_create_buffer_view(result->buffer, &result->buffer_view_desc, &result->buffer_view) != SPUD_SUCCESS)
+		if (SPUDFAIL(spudgpu_create_buffer_view(result->buffer, &result->buffer_view_desc, &result->buffer_view)))
 			goto failedattempt;
 
 		if (pData) {
 			void *data_ptr = nullptr;
-			if (spudgpu_map_buffer(result->buffer, result->buffer_view_desc.offset_from_parent_buffer, result->buffer_view_desc.size, &data_ptr) !=
-			    SPUD_SUCCESS)
+			if (SPUDFAIL(spudgpu_map_buffer(result->buffer, result->buffer_view_desc.offset_from_parent_buffer, result->buffer_view_desc.size, &data_ptr)))
 				goto failedattempt;
 
 			memcpy(data_ptr, pData, size);
@@ -413,20 +411,20 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 failedattempt:
 	result->~aprend_storage_buffer_t();
 	free(result);
-	return NULL;
+	return nullptr;
 }
 void aprend_storage_buffer_destroy(aprend_storage_buffer buffer) {
-	if (!buffer)
-		return;
-	buffer->~aprend_storage_buffer_t();
-	free(buffer);
+	if (buffer) {
+		buffer->~aprend_storage_buffer_t();
+		free(buffer);
+	}
 }
 bool aprend_storage_buffer_update(aprend_storage_buffer buffer, uint64_t local_offset, uint64_t size, void *pData) {
-	if (!(buffer && size && pData))
+	if (!buffer || size == 0 || !pData)
 		return false;
 	uint64_t byte_offset = buffer->buffer_view_desc.offset_from_parent_buffer + local_offset;
 	void *data_ptr       = nullptr;
-	if (!spudgpu_map_buffer(buffer->buffer, byte_offset, size, &data_ptr))
+	if (SPUDFAIL(spudgpu_map_buffer(buffer->buffer, byte_offset, size, &data_ptr)))
 		return false;
 	memcpy(data_ptr, pData, size);
 	spudgpu_unmap_buffer(buffer->buffer);

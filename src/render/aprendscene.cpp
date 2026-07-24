@@ -14,7 +14,10 @@
    Internal helpers
    ============================================================ */
 
-static spudgpu_shader_module load_spirv(spudgpu_device device, SPUDGPU_SHADER_STAGE stage, const char *path) {
+static spudgpu_shader_module load_spirv(
+    spudgpu_device device,
+    SPUDGPU_SHADER_STAGE stage,
+    const char *path) {
 	FILE *f = fopen(path, "rb");
 	if (!f) {
 		printf("apricot: cannot open shader '%s'\n", path);
@@ -77,7 +80,9 @@ static void recompute_camera_matrices(aprend_camera_t *cam) {
 	cam->dirty = false;
 }
 
-static void update_node_recursive(aprend_node_t *node, const glm::dmat4 &parent_world) {
+static void update_node_recursive(
+    aprend_node_t *node,
+    const glm::dmat4 &parent_world) {
 	glm::dmat4 local = glm::translate(glm::dmat4(1.0), node->local_translation) * glm::dmat4(glm::mat4_cast(node->local_rotation)) *
 	                   glm::scale(glm::dmat4(1.0), glm::dvec3(node->local_scale));
 
@@ -203,7 +208,9 @@ void aprend_scene_destroy(aprend_scene scene) {
 	free(scene);
 }
 
-void aprend_scene_update(aprend_scene scene, float /*delta_time*/) {
+void aprend_scene_update(
+    aprend_scene scene,
+    float /*delta_time*/) {
 	if (!scene)
 		return;
 
@@ -217,15 +224,18 @@ void aprend_scene_update(aprend_scene scene, float /*delta_time*/) {
    Node
    ============================================================ */
 
-aprend_node aprend_node_create(aprend_scene scene, const char *name) {
+aprend_node aprend_node_create(
+    aprend_scene scene,
+    const char *name) {
 	if (!scene)
 		return nullptr;
 
 	aprend_node_t *node = (aprend_node_t *)malloc(sizeof(aprend_node_t));
 	if (!node)
 		return nullptr;
-	node       = new (node) aprend_node_t();
-	node->name = name ? name : "";
+	node        = new (node) aprend_node_t();
+	node->name  = name ? name : "";
+	node->scene = scene;
 	scene->all_nodes.push_back(node);
 	return node;
 }
@@ -236,12 +246,20 @@ void aprend_node_destroy(aprend_node node) {
 	aprend_node_detach(node);
 	for (aprend_node_t *child : node->children)
 		child->parent = nullptr;
+	if (node->scene) {
+		auto &nodes = node->scene->all_nodes;
+		nodes.erase(std::remove(nodes.begin(), nodes.end(), node), nodes.end());
+	}
 	node->~aprend_node_t();
 	free(node);
 }
 
-void aprend_node_attach(aprend_node parent, aprend_node child) {
-	if (!parent || !child || child->parent == parent)
+void aprend_node_attach(
+    aprend_node parent,
+    aprend_node child) {
+	if (!parent || !child)
+		return;
+	if (child->parent == parent)
 		return;
 	aprend_node_detach(child);
 	parent->children.push_back(child);
@@ -249,26 +267,34 @@ void aprend_node_attach(aprend_node parent, aprend_node child) {
 }
 
 void aprend_node_detach(aprend_node node) {
-	if (!node || !node->parent)
+	if (!node)
+		return;
+	if (!node->parent)
 		return;
 	auto &s = node->parent->children;
 	s.erase(std::remove(s.begin(), s.end(), node), s.end());
 	node->parent = nullptr;
 }
 
-void aprend_node_set_translation(aprend_node node, ApriDVec3 pos) {
+void aprend_node_set_translation(
+    aprend_node node,
+    ApriDVec3 pos) {
 	if (!node)
 		return;
 	node->local_translation = to_glm(pos);
 }
 
-void aprend_node_set_rotation(aprend_node node, ApriQuat rot) {
+void aprend_node_set_rotation(
+    aprend_node node,
+    ApriQuat rot) {
 	if (!node)
 		return;
 	node->local_rotation = to_glm(rot);
 }
 
-void aprend_node_set_scale(aprend_node node, ApriVec3 scale) {
+void aprend_node_set_scale(
+    aprend_node node,
+    ApriVec3 scale) {
 	if (!node)
 		return;
 	node->local_scale = to_glm(scale);
@@ -309,7 +335,9 @@ ApriMat4 aprend_node_get_world_transform(aprend_node node) {
    Geometry
    ============================================================ */
 
-aprend_geometry aprend_geometry_create(aprend_scene scene, const char *name) {
+aprend_geometry aprend_geometry_create(
+    aprend_scene scene,
+    const char *name) {
 	if (!scene)
 		return nullptr;
 
@@ -334,7 +362,9 @@ void aprend_geometry_destroy(aprend_geometry geom) {
 	free(geom);
 }
 
-void aprend_geometry_attach_to(aprend_geometry geom, aprend_node parent) {
+void aprend_geometry_attach_to(
+    aprend_geometry geom,
+    aprend_node parent) {
 	if (!geom || !parent)
 		return;
 	aprend_geometry_detach(geom);
@@ -343,20 +373,26 @@ void aprend_geometry_attach_to(aprend_geometry geom, aprend_node parent) {
 }
 
 void aprend_geometry_detach(aprend_geometry geom) {
-	if (!geom || !geom->parent_node)
+	if (!geom)
+		return;
+	if (!geom->parent_node)
 		return;
 	auto &list = geom->parent_node->geometries;
 	list.erase(std::remove(list.begin(), list.end(), geom), list.end());
 	geom->parent_node = nullptr;
 }
 
-void aprend_geometry_set_mesh(aprend_geometry geom, aprend_mesh mesh) {
+void aprend_geometry_set_mesh(
+    aprend_geometry geom,
+    aprend_mesh mesh) {
 	if (!geom)
 		return;
 	geom->mesh = mesh;
 }
 
-void aprend_geometry_set_material(aprend_geometry geom, aprend_material mat) {
+void aprend_geometry_set_material(
+    aprend_geometry geom,
+    aprend_material mat) {
 	if (!geom)
 		return;
 	geom->material = mat;
@@ -395,7 +431,10 @@ void aprend_mesh_destroy(aprend_mesh mesh) {
 	mesh->~aprend_mesh_t();
 	free(mesh);
 }
-void aprend_mesh_set_vertex_bindings(aprend_mesh mesh, const aprend_vertex_binding *bindings, uint32_t binding_count) {
+void aprend_mesh_set_vertex_bindings(
+    aprend_mesh mesh,
+    const aprend_vertex_binding *bindings,
+    uint32_t binding_count) {
 	if (!mesh)
 		return;
 	if (mesh->uploaded)
@@ -405,7 +444,11 @@ void aprend_mesh_set_vertex_bindings(aprend_mesh mesh, const aprend_vertex_bindi
 		free(mesh->vertex_binding_data[i]);
 	mesh->vertex_binding_data.resize((size_t)binding_count);
 }
-void aprend_mesh_set_vertex_binding_data(aprend_mesh mesh, uint32_t binding, uint32_t vertex_count, const void *data) {
+void aprend_mesh_set_vertex_binding_data(
+    aprend_mesh mesh,
+    uint32_t binding,
+    uint32_t vertex_count,
+    const void *data) {
 	if (!(mesh && data && vertex_count))
 		return;
 	for (size_t i = 0; i < mesh->vertex_bindings.size(); ++i) {
@@ -420,7 +463,11 @@ void aprend_mesh_set_vertex_binding_data(aprend_mesh mesh, uint32_t binding, uin
 	}
 	mesh->vertex_count = vertex_count;
 }
-void aprend_mesh_set_indices(aprend_mesh mesh, APREND_INDEX_STRIDE stride, uint32_t index_count, const void *data) {
+void aprend_mesh_set_indices(
+    aprend_mesh mesh,
+    APREND_INDEX_STRIDE stride,
+    uint32_t index_count,
+    const void *data) {
 	if (!(mesh && data && index_count))
 		return;
 	mesh->index_stride = stride;
@@ -459,14 +506,16 @@ failedattempt:
 		aprend_vertex_buffer_destroy(vb);
 	mesh->vertex_buffers.clear();
 }
-bool aprend_mesh_is_uploaded(aprend_mesh mesh) { return mesh && mesh->uploaded; }
+bool aprend_mesh_is_uploaded(aprend_mesh mesh) { return mesh ? mesh->uploaded : false; }
 
 /* ============================================================
    Material
    ============================================================ */
 
-aprend_material aprend_material_create(aprend_instance instance, const aprend_material_desc *desc) {
-	if (!(instance && desc))
+aprend_material aprend_material_create(
+    aprend_instance instance,
+    const aprend_material_desc *desc) {
+	if (!instance || !desc)
 		return nullptr;
 	if (!(desc->vertex_spirv && desc->vertex_spirv_size && desc->fragment_spirv && desc->fragment_spirv_size))
 		return nullptr;
@@ -555,19 +604,27 @@ void aprend_material_destroy(aprend_material mat) {
 
 spudgpu_shader_pipeline aprend_material_get_spudgpu_pipeline(aprend_material mat) { return mat ? mat->pipeline : nullptr; }
 
-void aprend_material_set_color(aprend_material mat, ApriVec4 color) {
+void aprend_material_set_color(
+    aprend_material mat,
+    ApriVec4 color) {
 	if (!mat)
 		return;
 	mat->color = to_glm(color);
 }
 
-void aprend_material_set_float(aprend_material mat, const char *param, float value) {
+void aprend_material_set_float(
+    aprend_material mat,
+    const char *param,
+    float value) {
 	if (!mat || !param)
 		return;
 	mat->float_params[param] = value;
 }
 
-void aprend_material_set_vec4(aprend_material mat, const char *param, ApriVec4 value) {
+void aprend_material_set_vec4(
+    aprend_material mat,
+    const char *param,
+    ApriVec4 value) {
 	if (!mat || !param)
 		return;
 	mat->vec4_params[param] = to_glm(value);
@@ -586,7 +643,12 @@ void aprend_camera_destroy(aprend_camera cam) {
 	free(cam);
 }
 
-void aprend_camera_set_perspective(aprend_camera cam, float fov_y, float aspect, float near_z, float far_z) {
+void aprend_camera_set_perspective(
+    aprend_camera cam,
+    float fov_y,
+    float aspect,
+    float near_z,
+    float far_z) {
 	if (!cam)
 		return;
 	cam->projection_type = ApricotProjectionType::Perspective;
@@ -597,7 +659,12 @@ void aprend_camera_set_perspective(aprend_camera cam, float fov_y, float aspect,
 	cam->dirty           = true;
 }
 
-void aprend_camera_set_orthographic(aprend_camera cam, float width, float height, float near_z, float far_z) {
+void aprend_camera_set_orthographic(
+    aprend_camera cam,
+    float width,
+    float height,
+    float near_z,
+    float far_z) {
 	if (!cam)
 		return;
 	cam->projection_type = ApricotProjectionType::Orthographic;
@@ -608,21 +675,29 @@ void aprend_camera_set_orthographic(aprend_camera cam, float width, float height
 	cam->dirty           = true;
 }
 
-void aprend_camera_set_position(aprend_camera cam, ApriDVec3 pos) {
+void aprend_camera_set_position(
+    aprend_camera cam,
+    ApriDVec3 pos) {
 	if (!cam)
 		return;
 	cam->position = to_glm(pos);
 	cam->dirty    = true;
 }
 
-void aprend_camera_set_rotation(aprend_camera cam, ApriQuat rot) {
+void aprend_camera_set_rotation(
+    aprend_camera cam,
+    ApriQuat rot) {
 	if (!cam)
 		return;
 	cam->rotation = to_glm(rot);
 	cam->dirty    = true;
 }
 
-void aprend_camera_look_at(aprend_camera cam, ApriDVec3 eye, ApriDVec3 target, ApriVec3 up) {
+void aprend_camera_look_at(
+    aprend_camera cam,
+    ApriDVec3 eye,
+    ApriDVec3 target,
+    ApriVec3 up) {
 	if (!cam)
 		return;
 	/* Convert look direction into rotation quaternion so recompute_camera_matrices
@@ -676,7 +751,9 @@ void aprend_light_destroy(aprend_light light) {
 	free(light);
 }
 
-void aprend_light_attach_to(aprend_light light, aprend_node node) {
+void aprend_light_attach_to(
+    aprend_light light,
+    aprend_node node) {
 	if (!light || !node)
 		return;
 	aprend_light_detach(light);
@@ -694,19 +771,27 @@ void aprend_light_detach(aprend_light light) {
 	light->node = nullptr;
 }
 
-void aprend_light_set_color(aprend_light light, ApriVec4 color) {
+void aprend_light_set_color(
+    aprend_light light,
+    ApriVec4 color) {
 	if (light)
 		light->color = to_glm(color);
 }
-void aprend_light_set_intensity(aprend_light light, float intensity) {
+void aprend_light_set_intensity(
+    aprend_light light,
+    float intensity) {
 	if (light)
 		light->intensity = intensity;
 }
-void aprend_light_set_range(aprend_light light, float range) {
+void aprend_light_set_range(
+    aprend_light light,
+    float range) {
 	if (light)
 		light->range = range;
 }
-void aprend_light_set_spot_angle(aprend_light light, float degrees) {
+void aprend_light_set_spot_angle(
+    aprend_light light,
+    float degrees) {
 	if (light)
 		light->spot_angle = degrees;
 }
@@ -734,7 +819,7 @@ static bool create_offscreen_color_target(aprend_viewport_t *vp) {
 	fb_desc.depth_format     = k_offscreen_depth_format;
 	fb_desc.sample_count     = 1;
 
-	vp->framebuffer      = aprend_framebuffer_create(vp->instance, &fb_desc);
+	vp->framebuffer       = aprend_framebuffer_create(vp->instance, &fb_desc);
 	vp->depth_image_fresh = true; // depth attachment starts in UNDEFINED layout
 	return vp->framebuffer != nullptr;
 }
@@ -752,33 +837,11 @@ void aprend_viewport_destroy(aprend_viewport vp) {
 	free(vp);
 }
 
-void aprend_viewport_set_rect(aprend_viewport vp, float x, float y, float w, float h) {
-	if (!vp)
-		return;
-	if (vp->is_offscreen)
-		return; /* off-screen viewports use fixed dimensions */
-	vp->x = x;
-	vp->y = y;
-	vp->w = w;
-	vp->h = h;
-}
-
-void aprend_viewport_render(aprend_viewport vp) {
-	if (!vp)
-		return;
-	if (!vp->instance)
-		return;
-
-	if (vp->camera->dirty)
-		recompute_camera_matrices(vp->camera);
-
-	glm::mat4 view = vp->camera->view_matrix;
-	glm::mat4 proj = vp->camera->proj_matrix;
-
-	SPUDRESULT r = SPUD_SUCCESS;
-}
-
-aprend_viewport aprend_viewport_create_offscreen(aprend_scene scene, aprend_camera cam, uint32_t width, uint32_t height) {
+aprend_viewport aprend_viewport_create_offscreen(
+    aprend_scene scene,
+    aprend_camera cam,
+    uint32_t width,
+    uint32_t height) {
 	if (!scene || !cam)
 		return nullptr;
 	if (!scene->instance || width == 0 || height == 0)
@@ -794,8 +857,6 @@ aprend_viewport aprend_viewport_create_offscreen(aprend_scene scene, aprend_came
 	vp->is_offscreen  = true;
 	vp->render_width  = width;
 	vp->render_height = height;
-	vp->w             = 1.f;
-	vp->h             = 1.f;
 
 	if (!create_offscreen_color_target(vp))
 		printf("apricot: create_offscreen_color_target failed for viewport (%ux%u)\n", width, height);
@@ -803,7 +864,10 @@ aprend_viewport aprend_viewport_create_offscreen(aprend_scene scene, aprend_came
 	return vp;
 }
 
-void aprend_viewport_resize(aprend_viewport vp, uint32_t width, uint32_t height) {
+void aprend_viewport_resize(
+    aprend_viewport vp,
+    uint32_t width,
+    uint32_t height) {
 	if (!vp)
 		return;
 	if (!vp->is_offscreen || width == 0 || height == 0)
@@ -843,7 +907,9 @@ aprend_framebuffer aprend_viewport_get_framebuffer(aprend_viewport vp) {
 	return vp->framebuffer;
 }
 
-void aprend_viewport_record(aprend_viewport vp, spudgpu_command_list cmd) {
+void aprend_viewport_record(
+    aprend_viewport vp,
+    spudgpu_command_list cmd) {
 	if (!vp || !cmd)
 		return;
 	if (!vp->is_offscreen)
@@ -889,11 +955,11 @@ void aprend_viewport_record(aprend_viewport vp, spudgpu_command_list cmd) {
 	// a resize); every frame after that it's already sitting in that layout
 	// from the end of the previous render pass, so no further barrier is
 	// needed at all.
-	aprend_texture2d depth_tex = aprend_framebuffer_get_depth_attachment_texture(vp->framebuffer);
+	aprend_texture2d depth_tex    = aprend_framebuffer_get_depth_attachment_texture(vp->framebuffer);
 	spudgpu_image_view depth_view = depth_tex ? aprend_texture2d_get_spudgpu_image_view(depth_tex) : nullptr;
 	if (depth_view && vp->depth_image_fresh) {
-		spudgpu_cmd_image_barrier(cmd, aprend_texture2d_get_spudgpu_image(depth_tex),
-		                          SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		spudgpu_cmd_image_barrier(
+		    cmd, aprend_texture2d_get_spudgpu_image(depth_tex), SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 		vp->depth_image_fresh = false;
 	}
 
@@ -903,13 +969,13 @@ void aprend_viewport_record(aprend_viewport vp, spudgpu_command_list cmd) {
 	rp.width                  = vp->render_width;
 	rp.height                 = vp->render_height;
 	if (depth_view) {
-		rp.depth_attachment.image_view        = depth_view;
-		rp.depth_attachment.depth_load_op     = SPUDGPU_LOAD_OP_CLEAR;
-		rp.depth_attachment.depth_store_op    = SPUDGPU_STORE_OP_STORE;
-		rp.depth_attachment.stencil_load_op   = SPUDGPU_LOAD_OP_DONT_CARE;
-		rp.depth_attachment.stencil_store_op  = SPUDGPU_STORE_OP_DONT_CARE;
-		rp.depth_attachment.clear_depth       = 1.0f;
-		rp.depth_attachment.clear_stencil     = 0;
+		rp.depth_attachment.image_view       = depth_view;
+		rp.depth_attachment.depth_load_op    = SPUDGPU_LOAD_OP_CLEAR;
+		rp.depth_attachment.depth_store_op   = SPUDGPU_STORE_OP_STORE;
+		rp.depth_attachment.stencil_load_op  = SPUDGPU_LOAD_OP_DONT_CARE;
+		rp.depth_attachment.stencil_store_op = SPUDGPU_STORE_OP_DONT_CARE;
+		rp.depth_attachment.clear_depth      = 1.0f;
+		rp.depth_attachment.clear_stencil    = 0;
 	}
 	spudgpu_cmd_begin_rendering(cmd, &rp);
 
@@ -927,8 +993,7 @@ void aprend_viewport_record(aprend_viewport vp, spudgpu_command_list cmd) {
 			// its material's pipeline if it has one, otherwise falls back to
 			// the built-in debug pipeline (if aprend_renderer_init ran). A
 			// geometry with neither simply can't be drawn.
-			spudgpu_shader_pipeline bound_pipeline =
-			    (geom->material && geom->material->pipeline) ? geom->material->pipeline : vp->instance->default_pipeline;
+			spudgpu_shader_pipeline bound_pipeline = (geom->material && geom->material->pipeline) ? geom->material->pipeline : vp->instance->default_pipeline;
 			if (!bound_pipeline)
 				continue;
 			spudgpu_cmd_bind_pipeline(cmd, bound_pipeline);
@@ -942,7 +1007,7 @@ void aprend_viewport_record(aprend_viewport vp, spudgpu_command_list cmd) {
 			// exact layout to receive per-draw data at all — there's no
 			// generic per-material push-constant/uniform delivery yet.
 			ApricotPushConst pc{};
-			std::memcpy(pc.mvp, &mvp[0][0], 64);
+			memcpy(pc.mvp, &mvp[0][0], 64);
 			glm::vec4 col = geom->material ? geom->material->color : glm::vec4(1.f);
 			pc.color[0]   = col.r;
 			pc.color[1]   = col.g;

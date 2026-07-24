@@ -271,8 +271,8 @@ void aprend_light_set_spot_angle(
    picking against ApCAD solids, which needs no GPU pass or readback.
    ============================================================ */
 
-/* Off-screen variant: creates a (width × height) BGRA8_UNORM render target.
- * Call aprend_viewport_record() each frame instead of aprend_viewport_render(). */
+/* Creates a (width × height) BGRA8_UNORM render target.
+ * Call aprend_viewport_record() each frame. */
 aprend_viewport aprend_viewport_create_offscreen(
     aprend_scene scene,
     aprend_camera cam,
@@ -285,14 +285,6 @@ void aprend_viewport_resize(
     aprend_viewport vp,
     uint32_t width,
     uint32_t height);
-
-void aprend_viewport_set_rect(
-    aprend_viewport vp,
-    float x,
-    float y,
-    float w,
-    float h); /* normalized 0-1 */
-void aprend_viewport_render(aprend_viewport vp);
 
 /* Off-screen only: records the scene render pass into an externally-provided
  * command list.  The caller must:

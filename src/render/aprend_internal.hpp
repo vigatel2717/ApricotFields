@@ -58,6 +58,10 @@ typedef struct aprend_node_t
 #endif
     std::string name;
 
+    /* Owning scene -- lets aprend_node_destroy erase itself from
+     * scene->all_nodes instead of leaving a dangling entry there. */
+    struct aprend_scene_t *scene{nullptr};
+
     /* Local transform */
     glm::dvec3 local_translation{0.0, 0.0, 0.0};
     glm::quat local_rotation{1.f, 0.f, 0.f, 0.f};
@@ -207,9 +211,6 @@ typedef struct aprend_viewport_t
     aprend_instance instance{nullptr};
     aprend_scene_t *scene{nullptr};
     aprend_camera_t *camera{nullptr};
-
-    /* Normalized 0-1 rect within the swap chain surface */
-    float x{0.f}, y{0.f}, w{1.f}, h{1.f};
 
     /* Off-screen rendering path (is_offscreen == true).
      * render_width / render_height are fixed at creation time.

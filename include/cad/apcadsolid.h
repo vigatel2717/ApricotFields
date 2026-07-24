@@ -29,14 +29,26 @@ extern "C" {
 
 typedef struct apcad_solid_t *apcad_solid;
 
-apcad_solid apcad_box_create(float width, float height, float depth);
-apcad_solid apcad_cylinder_create(float radius, float height, uint32_t segments);
-apcad_solid apcad_sphere_create(float radius, uint32_t segments, uint32_t rings);
+apcad_solid apcad_box_create(
+    float width,
+    float height,
+    float depth);
+apcad_solid apcad_cylinder_create(
+    float radius,
+    float height,
+    uint32_t segments);
+apcad_solid apcad_sphere_create(
+    float radius,
+    uint32_t segments,
+    uint32_t rings);
 
 /* `polygon` is a simple convex polygon in the XZ plane (ApriVec2.x -> world
  * x, ApriVec2.y -> world z), wound CCW as seen from above (+Y looking down).
  * Extrudes from y=0 to y=height. */
-apcad_solid apcad_extrude_create(const ApriVec2 *polygon, uint32_t point_count, float height);
+apcad_solid apcad_extrude_create(
+    const ApriVec2 *polygon,
+    uint32_t point_count,
+    float height);
 
 void apcad_solid_destroy(apcad_solid solid);
 
@@ -48,7 +60,9 @@ void apcad_solid_destroy(apcad_solid solid);
  * kernel has no notion of texturing — give the geometry a real material if
  * you need either. Caller owns `mesh`'s lifetime; it must already exist
  * (aprend_mesh_create) before calling this. */
-void apcad_solid_tessellate(apcad_solid solid, aprend_mesh mesh);
+void apcad_solid_tessellate(
+    apcad_solid solid,
+    aprend_mesh mesh);
 
 #ifdef __cplusplus
 }

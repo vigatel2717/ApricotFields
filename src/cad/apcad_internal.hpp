@@ -9,10 +9,27 @@
 #include "cad/apcadsolid.h"
 
 #include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+#include <glm/gtc/type_ptr.hpp>
+#include <cstring>
 #include <vector>
 
 inline glm::vec3 to_glm(const ApriVec3 &v) { return glm::vec3(v.x, v.y, v.z); }
 inline ApriVec3 from_glm(const glm::vec3 &v) { return {v.x, v.y, v.z}; }
+
+inline glm::dvec3 to_glm(const ApriDVec3 &v) { return glm::dvec3(v.x, v.y, v.z); }
+inline ApriDVec3 from_glm(const glm::dvec3 &v) { return {v.x, v.y, v.z}; }
+
+/* ApriQuat is {x,y,z,w}; glm::quat's constructor takes (w,x,y,z). */
+inline glm::quat to_glm(const ApriQuat &q) { return glm::quat(q.w, q.x, q.y, q.z); }
+inline ApriQuat from_glm(const glm::quat &q) { return {q.x, q.y, q.z, q.w}; }
+
+inline glm::mat4 to_glm(const ApriMat4 &m) { return glm::make_mat4(m.m); }
+inline ApriMat4 from_glm(const glm::mat4 &m) {
+	ApriMat4 r;
+	std::memcpy(r.m, &m[0][0], sizeof(r.m));
+	return r;
+}
 
 /* A single planar convex polygon, wound CCW as seen from outside the solid.
  * Indices refer into apcad_solid_t::vertices. */
