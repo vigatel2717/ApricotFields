@@ -9,6 +9,8 @@ extern "C" {
 #endif // __cplusplus
 
 typedef struct aprend_framebuffer_texture_spec {
+	// [format] is ignored if [existing_texture] is not nullptr.
+	aprend_texture2d existing_texture;
 	// Texture format.
 	SPUDGPU_FORMAT format;
 	// True if used for shaders, false otherwise.
@@ -64,10 +66,10 @@ bool aprend_framebuffer_clear_depth(
     bool clear_stencil,
     float depth,
     uint32_t stencil);
-aprend_texture2d aprend_framebuffer_get_color_attachment_texture(
+aprend_texture_view aprend_framebuffer_get_color_attachment(
     aprend_framebuffer framebuffer,
     uint32_t index);
-aprend_texture2d aprend_framebuffer_get_depth_attachment_texture(aprend_framebuffer framebuffer);
+aprend_texture_view aprend_framebuffer_get_depth_attachment(aprend_framebuffer framebuffer);
 
 #if __cplusplus
 }

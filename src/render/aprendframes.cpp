@@ -8,25 +8,42 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 	const aprend_framebuffer_desc &desc = framebuffer->desc;
 
 	framebuffer->color_attachments.reserve(desc.attachment_count);
+	framebuffer->owned_color_textures.reserve(desc.attachment_count);
 	for (uint32_t i = 0; i < desc.attachment_count; ++i) {
 		const aprend_framebuffer_texture_spec &spec = desc.attachments[i];
 
-		aprend_texture2d_desc tex_desc{};
-		tex_desc.width  = desc.width;
-		tex_desc.height = desc.height;
-		tex_desc.format = spec.format;
-		tex_desc.usage  = APREND_TEXTURE_USAGE_BIT_RENDER_TARGET;
-		if (spec.shader_resource || spec.use_for_gui)
-			tex_desc.usage |= APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE;
-		tex_desc.mip_levels   = 1; // attachments are single-mip; nothing generates a chain for them
-		tex_desc.array_layers = 1;
-		tex_desc.sample_count = desc.sample_count ? desc.sample_count : 1;
-		tex_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
+		aprend_texture2d texture;
+		bool owns_texture;
+		if (spec.existing_texture) {
+			texture      = spec.existing_texture;
+			owns_texture = false;
+		} else {
+			aprend_texture2d_desc tex_desc{};
+			tex_desc.width  = desc.width;
+			tex_desc.height = desc.height;
+			tex_desc.format = spec.format;
+			tex_desc.usage  = APREND_TEXTURE_USAGE_BIT_RENDER_TARGET;
+			if (spec.shader_resource || spec.use_for_gui)
+				tex_desc.usage |= APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE;
+			tex_desc.mip_levels   = 1; // attachments are single-mip; nothing generates a chain for them
+			tex_desc.array_layers = 1;
+			tex_desc.sample_count = desc.sample_count ? desc.sample_count : 1;
+			tex_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
 
-		aprend_texture2d attachment = aprend_texture2d_create(framebuffer->instance, &tex_desc);
-		if (!attachment)
+			texture = aprend_texture2d_create(framebuffer->instance, &tex_desc);
+			if (!texture)
+				return false;
+			owns_texture = true;
+		}
+
+		aprend_texture_view view = aprend_texture_view_create_2d(texture, APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET);
+		if (!view) {
+			if (owns_texture)
+				aprend_texture2d_destroy(texture);
 			return false;
-		framebuffer->color_attachments.push_back(attachment);
+		}
+		framebuffer->color_attachments.push_back(view);
+		framebuffer->owned_color_textures.push_back(owns_texture ? texture : nullptr);
 	}
 
 	if (desc.depth_format != SPUDGPU_FORMAT_UNKNOWN) {
@@ -40,9 +57,15 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 		depth_desc.sample_count = desc.sample_count ? desc.sample_count : 1;
 		depth_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
 
-		framebuffer->depth_attachment = aprend_texture2d_create(framebuffer->instance, &depth_desc);
-		if (!framebuffer->depth_attachment)
+		aprend_texture2d depth_texture = aprend_texture2d_create(framebuffer->instance, &depth_desc);
+		if (!depth_texture)
 			return false;
+
+		framebuffer->depth_attachment = aprend_texture_view_create_2d(depth_texture, APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL);
+		if (!framebuffer->depth_attachment) {
+			aprend_texture2d_destroy(depth_texture);
+			return false;
+		}
 		framebuffer->has_depth_attachment = true;
 	}
 
@@ -50,12 +73,18 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 }
 
 static void aprend_framebuffer_destroy_attachments(aprend_framebuffer_t *framebuffer) {
-	for (aprend_texture2d attachment : framebuffer->color_attachments)
-		aprend_texture2d_destroy(attachment);
+	for (size_t i = 0; i < framebuffer->color_attachments.size(); ++i) {
+		aprend_destroy_texture_view(framebuffer->color_attachments[i]);
+		if (framebuffer->owned_color_textures[i])
+			aprend_texture2d_destroy(framebuffer->owned_color_textures[i]);
+	}
 	framebuffer->color_attachments.clear();
+	framebuffer->owned_color_textures.clear();
 
 	if (framebuffer->has_depth_attachment) {
-		aprend_texture2d_destroy(framebuffer->depth_attachment);
+		aprend_texture2d depth_texture = framebuffer->depth_attachment->texture._t2d;
+		aprend_destroy_texture_view(framebuffer->depth_attachment);
+		aprend_texture2d_destroy(depth_texture);
 		framebuffer->depth_attachment     = nullptr;
 		framebuffer->has_depth_attachment = false;
 	}
@@ -136,7 +165,7 @@ bool aprend_framebuffer_read_pixel(
 	if (attachment_index >= framebuffer->color_attachments.size())
 		return false;
 
-	aprend_texture2d attachment = framebuffer->color_attachments[attachment_index];
+	aprend_texture2d attachment = framebuffer->color_attachments[attachment_index]->texture._t2d;
 	uint32_t bytes_per_pixel    = spudgpu_format_bit_count(attachment->desc.format) / 8;
 	if (data_size < bytes_per_pixel)
 		return false;
@@ -156,9 +185,11 @@ bool aprend_framebuffer_clear_colors(
 		return true; // Nothing to clear.
 
 	return aprend_submit_immediate(framebuffer->instance, [&](spudgpu_command_list cmd) {
-		for (aprend_texture2d attachment : framebuffer->color_attachments) {
+		for (aprend_texture_view view : framebuffer->color_attachments) {
+			aprend_texture2d attachment = view->texture._t2d;
 			spudgpu_cmd_image_barrier(cmd, attachment->image, attachment->current_layout, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-			spudgpu_cmd_clear_color_attachment(cmd, attachment->image_view, r, g, b, a, attachment->desc.width, attachment->desc.height);
+			spudgpu_cmd_clear_color_attachment(
+			    cmd, aprend_texture_view_get_spudgpu_image_view(view), r, g, b, a, attachment->desc.width, attachment->desc.height);
 			attachment->current_layout = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 		}
 	});
@@ -175,16 +206,21 @@ bool aprend_framebuffer_clear_depth(
 		return false;
 	if (!clear_depth && !clear_stencil)
 		return true; // Nothing to clear.
+	if (!framebuffer->depth_attachment)
+		return false;
 
-	aprend_texture2d attachment = framebuffer->depth_attachment;
+	aprend_texture_view view            = framebuffer->depth_attachment;
+	aprend_texture2d attachment_texture = view->texture._t2d;
+
 	return aprend_submit_immediate(framebuffer->instance, [&](spudgpu_command_list cmd) {
-		spudgpu_cmd_image_barrier(cmd, attachment->image, attachment->current_layout, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		spudgpu_cmd_image_barrier(cmd, attachment_texture->image, attachment_texture->current_layout, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 		spudgpu_cmd_clear_depth_attachment(
-		    cmd, attachment->image_view, clear_depth, clear_stencil, depth, stencil, attachment->desc.width, attachment->desc.height);
-		attachment->current_layout = SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+		    cmd, aprend_texture_view_get_spudgpu_image_view(view), clear_depth, clear_stencil, depth, stencil, attachment_texture->desc.width,
+		    attachment_texture->desc.height);
+		attachment_texture->current_layout = SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 	});
 }
-aprend_texture2d aprend_framebuffer_get_color_attachment_texture(
+aprend_texture_view aprend_framebuffer_get_color_attachment(
     aprend_framebuffer framebuffer,
     uint32_t index) {
 	if (framebuffer)
@@ -192,8 +228,10 @@ aprend_texture2d aprend_framebuffer_get_color_attachment_texture(
 			return framebuffer->color_attachments[index];
 	return nullptr; // Both if's fail.
 }
-aprend_texture2d aprend_framebuffer_get_depth_attachment_texture(aprend_framebuffer framebuffer) {
-	if (framebuffer && framebuffer->has_depth_attachment)
+aprend_texture_view aprend_framebuffer_get_depth_attachment(aprend_framebuffer framebuffer) {
+	if (!framebuffer)
+		return nullptr;
+	if (framebuffer->has_depth_attachment)
 		return framebuffer->depth_attachment;
 	else
 		return nullptr;

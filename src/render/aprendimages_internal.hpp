@@ -43,8 +43,7 @@ typedef struct aprend_texture2d_t
     ~aprend_texture2d_t();
     aprend_instance instance;
     aprend_texture2d_desc desc;
-    spudgpu_image image;
-    spudgpu_image_view image_view{nullptr};
+    spudgpu_image image{nullptr};
     SPUDGPU_IMAGE_LAYOUT current_layout{SPUDGPU_IMAGE_LAYOUT_UNDEFINED};
 } aprend_texture2d_t;
 
@@ -57,11 +56,27 @@ typedef struct aprend_texture3d_t
     ~aprend_texture3d_t();
     aprend_instance instance;
     aprend_texture3d_desc desc;
-    spudgpu_image image;
+    spudgpu_image image{nullptr};
     spudgpu_image_view image_view{nullptr};
     SPUDGPU_IMAGE_LAYOUT current_layout{SPUDGPU_IMAGE_LAYOUT_UNDEFINED};
 } aprend_texture3d_t;
 
+typedef struct aprend_texture_view_t
+{
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_texture_view_t() = default;
+	~aprend_texture_view_t();
+	aprend_instance instance{nullptr};
+	APREND_TEXTURE_VIEW_TYPE view_type{APREND_TEXTURE_VIEW_TYPE_NONE};
+	APREND_TEXTURE_DIMENSION dimension{APREND_TEXTURE_DIMENSION_1D};
+	spudgpu_image_view image_view{nullptr};
+	union {
+		aprend_texture2d _t2d;
+		aprend_texture3d _t3d;
+	} texture;
+} aprend_texture_view_t;
 
 typedef struct aprend_framebuffer_t
 {
@@ -77,7 +92,11 @@ typedef struct aprend_framebuffer_t
     // not guaranteed to outlive this framebuffer, but aprend_framebuffer_resize
     // re-reads desc.attachments on every resize, long after creation returns.
     std::vector<aprend_framebuffer_texture_spec> attachment_specs;
-    std::vector<aprend_texture2d> color_attachments;
-    aprend_texture2d depth_attachment{nullptr};
+    std::vector<aprend_texture_view> color_attachments;
+    // Parallel to color_attachments: the underlying texture if we created it
+    // (needs destroying), or nullptr if it was borrowed via
+    // aprend_framebuffer_texture_spec::existing_texture (caller still owns it).
+    std::vector<aprend_texture2d> owned_color_textures;
+    aprend_texture_view depth_attachment{nullptr};
     bool has_depth_attachment{false};
 } aprend_framebuffer_t;

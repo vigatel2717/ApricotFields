@@ -39,11 +39,10 @@ static uint32_t aprend_compute_mip_levels(
 
 // aprend_submit_immediate is shared — see aprendimages_internal.hpp.
 
-aprend_texture2d_t::~aprend_texture2d_t() {
-	spudgpu_destroy_image_view(this->image_view);
-	spudgpu_destroy_image(this->image);
-}
+aprend_texture2d_t::~aprend_texture2d_t() { spudgpu_destroy_image(this->image); }
 aprend_texture3d_t::~aprend_texture3d_t() { spudgpu_destroy_image(this->image); }
+
+aprend_texture_view_t::~aprend_texture_view_t() { spudgpu_destroy_image_view(this->image_view); }
 
 extern "C" {
 aprend_texture2d aprend_texture2d_create(
@@ -85,19 +84,11 @@ aprend_texture2d aprend_texture2d_create(
 	if (sr != SPUD_SUCCESS)
 		goto failedattempt;
 
-	{
-		spudgpu_image_view_desc view_desc{};
-		view_desc.parent_image                        = result->image;
-		view_desc.type                                = SPUDGPU_IMAGE_VIEW_TYPE_2D;
-		view_desc.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(desc->format);
-		view_desc.subresource_range.base_mip_level    = 0;
-		view_desc.subresource_range.mip_level_count   = image_desc.mip_levels;
-		view_desc.subresource_range.base_array_layer  = 0;
-		view_desc.subresource_range.array_layer_count = image_desc.array_layers;
-		sr                                            = spudgpu_create_image_view(result->image, &view_desc, &result->image_view);
-		if (sr != SPUD_SUCCESS)
-			goto failedattempt;
-	}
+	// desc->mip_levels/array_layers may have been 0 (meaning "auto"); record
+	// what was actually allocated so aprend_texture2d_get_desc and later view
+	// creation see the real counts instead of the sentinel.
+	result->desc.mip_levels   = image_desc.mip_levels;
+	result->desc.array_layers = image_desc.array_layers;
 
 	return result;
 failedattempt:
@@ -112,17 +103,8 @@ void aprend_texture2d_destroy(aprend_texture2d texture) {
 		free(texture);
 	}
 }
-bool aprend_texture2d_get_desc(
-    aprend_texture2d texture,
-    aprend_texture2d_desc *out_desc) {
-	if (texture && out_desc) {
-		*out_desc = texture->desc;
-		return true;
-	} else
-		return false;
-}
+aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture) { return texture ? texture->desc : aprend_texture2d_desc{}; }
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) { return texture ? texture->image : nullptr; }
-spudgpu_image_view aprend_texture2d_get_spudgpu_image_view(aprend_texture2d texture) { return texture ? texture->image_view : nullptr; }
 bool aprend_texture2d_update(
     aprend_texture2d texture,
     uint32_t x_offset,
@@ -305,6 +287,26 @@ aprend_texture3d aprend_texture3d_create(
 	SPUDRESULT sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
 	if (sr != SPUD_SUCCESS)
 		goto failedattempt;
+
+	// desc->mip_levels may have been 0 (meaning "auto"); record what was
+	// actually allocated so aprend_texture3d_get_desc and later view creation
+	// see the real count instead of the sentinel.
+	result->desc.mip_levels = image_desc.mip_levels;
+
+	{
+		spudgpu_image_view_desc view_desc{};
+		view_desc.parent_image                        = result->image;
+		view_desc.type                                = SPUDGPU_IMAGE_VIEW_TYPE_3D;
+		view_desc.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(desc->format);
+		view_desc.subresource_range.base_mip_level    = 0;
+		view_desc.subresource_range.mip_level_count   = image_desc.mip_levels;
+		view_desc.subresource_range.base_array_layer  = 0;
+		view_desc.subresource_range.array_layer_count = 1; // 3D textures do not support array layers
+		sr                                            = spudgpu_create_image_view(result->image, &view_desc, &result->image_view);
+		if (sr != SPUD_SUCCESS)
+			goto failedattempt;
+	}
+
 	return result;
 failedattempt:
 	printf("apricot: aprend_texture3d_create failed (%ux%ux%u): %s\n", desc->width, desc->height, desc->depth, spudresult_str(sr));
@@ -318,15 +320,7 @@ void aprend_texture3d_destroy(aprend_texture3d texture) {
 		free(texture);
 	}
 }
-bool aprend_texture3d_get_desc(
-    aprend_texture3d texture,
-    aprend_texture3d_desc *out_desc) {
-	if (texture && out_desc) {
-		*out_desc = texture->desc;
-		return true;
-	} else
-		return false;
-}
+aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture) { return texture ? texture->desc : aprend_texture3d_desc{}; }
 spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture) { return texture ? texture->image_view : NULL; }
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture) { return texture ? texture->image : NULL; }
 bool aprend_texture3d_update(
@@ -492,4 +486,82 @@ bool aprend_texture3d_resize(
 	/* Implementation-specific texture resizing logic goes here. */
 	return false; // Not implemented yet
 }
+
+aprend_texture_view aprend_texture_view_create_2d(
+    aprend_texture2d texture,
+    APREND_TEXTURE_VIEW_TYPE type) {
+	if (!texture || type == APREND_TEXTURE_VIEW_TYPE_NONE)
+		return nullptr;
+	aprend_texture_view_t *result = (aprend_texture_view_t *)malloc(sizeof(aprend_texture_view_t));
+	if (!result)
+		return nullptr;
+	result        = new (result) aprend_texture_view_t();
+
+	result->instance     = texture->instance;
+	result->dimension    = APREND_TEXTURE_DIMENSION_2D;
+	result->view_type    = type;
+	result->texture._t2d = texture;
+
+	spudgpu_image_view_desc imgvd{};
+	imgvd.parent_image                        = texture->image;
+	imgvd.type                                = SPUDGPU_IMAGE_VIEW_TYPE_2D;
+	imgvd.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(texture->desc.format);
+	imgvd.subresource_range.base_mip_level    = 0;
+	imgvd.subresource_range.mip_level_count   = texture->desc.mip_levels;
+	imgvd.subresource_range.base_array_layer  = 0;
+	imgvd.subresource_range.array_layer_count = texture->desc.array_layers;
+	SPUDRESULT sr = spudgpu_create_image_view(texture->image, &imgvd, &result->image_view);
+	if (SPUDFAIL(sr))
+		goto failedattempt;
+
+	return result;
+failedattempt:
+	printf("apricot: aprend_texture_view_create_2d failed: %s\n", spudresult_str(sr));
+	result->~aprend_texture_view_t();
+	free(result);
+	return nullptr;
+}
+aprend_texture_view aprend_texture_view_create_3d(
+    aprend_texture3d texture,
+    APREND_TEXTURE_VIEW_TYPE type) {
+	if (!texture || type == APREND_TEXTURE_VIEW_TYPE_NONE)
+		return nullptr;
+	aprend_texture_view_t *result = (aprend_texture_view_t *)malloc(sizeof(aprend_texture_view_t));
+	if (!result)
+		return nullptr;
+	result        = new (result) aprend_texture_view_t();
+
+	result->instance     = texture->instance;
+	result->dimension    = APREND_TEXTURE_DIMENSION_3D;
+	result->view_type    = type;
+	result->texture._t3d = texture;
+
+	spudgpu_image_view_desc imgvd{};
+	imgvd.parent_image                        = texture->image;
+	imgvd.type                                = SPUDGPU_IMAGE_VIEW_TYPE_3D;
+	imgvd.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(texture->desc.format);
+	imgvd.subresource_range.base_mip_level    = 0;
+	imgvd.subresource_range.mip_level_count   = texture->desc.mip_levels;
+	imgvd.subresource_range.base_array_layer  = 0;
+	imgvd.subresource_range.array_layer_count = 1; // 3D textures do not support array layers
+	SPUDRESULT sr = spudgpu_create_image_view(texture->image, &imgvd, &result->image_view);
+	if (SPUDFAIL(sr))
+		goto failedattempt;
+
+	return result;
+failedattempt:
+	printf("apricot: aprend_texture_view_create_3d failed: %s\n", spudresult_str(sr));
+	result->~aprend_texture_view_t();
+	free(result);
+	return nullptr;
+}
+void aprend_destroy_texture_view(aprend_texture_view view){
+	if (view){
+		view->~aprend_texture_view_t();
+		free(view);
+	}
+}
+APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) { return view ? view->view_type : APREND_TEXTURE_VIEW_TYPE_NONE; }
+APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) { return view ? view->dimension : APREND_TEXTURE_DIMENSION_1D; }
+spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view) { return view ? view->image_view : nullptr; }
 }

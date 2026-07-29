@@ -42,7 +42,7 @@ typedef struct aprend_texture2d_desc {
 	uint32_t initial_data_pitch; // row pitch in bytes, required if initial_data is set
 
 #if _DEBUG
-	const char *debug_name; // optional; forwarded to SpudGPU for RenderDoc/PIX labeling
+	const char *debug_name;
 #endif
 } aprend_texture2d_desc;
 
@@ -51,10 +51,7 @@ aprend_texture2d aprend_texture2d_create(
     aprend_instance instance,
     const aprend_texture2d_desc *desc);
 void aprend_texture2d_destroy(aprend_texture2d texture);
-bool aprend_texture2d_get_desc(
-    aprend_texture2d texture,
-    aprend_texture2d_desc *out_desc);
-spudgpu_image_view aprend_texture2d_get_spudgpu_image_view(aprend_texture2d texture);
+aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture);
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
 bool aprend_texture2d_update(
     aprend_texture2d texture,
@@ -74,6 +71,9 @@ bool aprend_texture2d_resize(
     aprend_texture2d texture,
     uint32_t new_width,
     uint32_t new_height);
+
+
+
 
 typedef struct aprend_texture3d_desc {
 	uint32_t width;
@@ -103,9 +103,7 @@ aprend_texture3d aprend_texture3d_create(
     aprend_instance instance,
     const aprend_texture3d_desc *desc);
 void aprend_texture3d_destroy(aprend_texture3d texture);
-bool aprend_texture3d_get_desc(
-    aprend_texture3d texture,
-    aprend_texture3d_desc *out_desc);
+aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture);
 spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture);
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
 bool aprend_texture3d_update(
@@ -131,6 +129,38 @@ bool aprend_texture3d_resize(
     uint32_t new_width,
     uint32_t new_height,
     uint32_t new_depth);
+
+typedef uint32_t APREND_TEXTURE_DIMENSION;
+enum {
+	APREND_TEXTURE_DIMENSION_1D       = 0,
+	APREND_TEXTURE_DIMENSION_2D       = 1,
+	APREND_TEXTURE_DIMENSION_3D       = 2,
+	APREND_TEXTURE_DIMENSION_CUBE     = 3,
+	APREND_TEXTURE_DIMENSION_1D_ARRAY = 4,
+	APREND_TEXTURE_DIMENSION_2D_ARRAY = 5,
+	APREND_TEXTURE_DIMENSION_3D_ARRAY = 6
+};
+
+typedef uint32_t APREND_TEXTURE_VIEW_TYPE;
+enum {
+	APREND_TEXTURE_VIEW_TYPE_NONE             = 0,
+	APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS = 1,
+	APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET     = 2,
+	APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL    = 3
+};
+
+typedef struct aprend_texture_view_t *aprend_texture_view;
+
+aprend_texture_view aprend_texture_view_create_2d(
+    aprend_texture2d texture,
+    APREND_TEXTURE_VIEW_TYPE type);
+aprend_texture_view aprend_texture_view_create_3d(
+    aprend_texture3d texture,
+    APREND_TEXTURE_VIEW_TYPE type);
+void aprend_destroy_texture_view(aprend_texture_view view);
+APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view);
+APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view);
+spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view);
 
 #if __cplusplus
 }

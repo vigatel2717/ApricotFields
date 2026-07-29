@@ -8,10 +8,13 @@ add_library(ApricotFields STATIC
         src/apricore.cpp
         src/render/aprend_internal.hpp
         src/render/aprendscene.cpp
+        src/render/aprendorbitcamera.cpp
         src/render/aprendbuffers.cpp
         src/render/aprendimages_internal.hpp
         src/render/aprendimages.cpp
         src/render/aprendframes.cpp
+        src/render/aprendcommands.cpp
+        src/render/aprendpipeline.cpp
         src/render/aprendbase.cpp
         src/cad/apcad_internal.hpp
         src/cad/apcadsolid.cpp
@@ -31,10 +34,13 @@ add_library(ApricotFields STATIC
         include/cad/apcadinference.h
         include/cad/apcaddraw.h
         include/render/aprendscene.h
+        include/render/aprendorbitcamera.h
         include/render/aprendbase.h
         include/render/aprendbuffers.h
         include/render/aprendimages.h
         include/render/aprendframes.h
+        include/render/aprendcommands.h
+        include/render/aprendpipeline.h
         include/sync/apsyncnet.h)
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

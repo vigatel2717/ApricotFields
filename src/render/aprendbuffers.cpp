@@ -368,7 +368,8 @@ bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offse
 	spudgpu_unmap_buffer(buffer->buffer);
 	return true;
 }
-uint32_t aprend_index_buffer_get_format(aprend_index_buffer buffer) { return buffer ? buffer->index_stride : APREND_INDEX_STRIDE_NONE; }
+APREND_INDEX_STRIDE aprend_index_buffer_get_format(aprend_index_buffer buffer) { return buffer ? buffer->index_stride : APREND_INDEX_STRIDE_NONE; }
+uint32_t aprend_index_buffer_get_index_count(aprend_index_buffer buffer) { return buffer ? buffer->index_count : 0; }
 
 aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uint64_t size, void *pData) {
 	if (!instance || size == 0)

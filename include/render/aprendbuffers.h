@@ -39,8 +39,6 @@ typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
 typedef struct aprend_index_buffer_t *aprend_index_buffer;
 typedef struct aprend_uniform_buffer_t *aprend_uniform_buffer;
 typedef struct aprend_storage_buffer_t *aprend_storage_buffer;
-typedef struct aprend_shader_t *aprend_shader;
-typedef struct aprend_shader_program_t *aprend_shader_program;
 
 typedef uint32_t APREND_BUFFER_CONTEXT_FLAGS;
 enum {
@@ -163,7 +161,8 @@ bool aprend_index_buffer_update(
     uint32_t index_offset,
     uint32_t index_count,
     void *pData);
-uint32_t aprend_index_buffer_get_stride(aprend_index_buffer buffer);
+APREND_INDEX_STRIDE aprend_index_buffer_get_stride(aprend_index_buffer buffer);
+uint32_t aprend_index_buffer_get_index_count(aprend_index_buffer buffer);
 
 aprend_storage_buffer aprend_storage_buffer_create(
     aprend_instance instance,

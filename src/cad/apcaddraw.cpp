@@ -307,6 +307,24 @@ bool apcad_pushpull_tool_update(
 			ApriVec3 p         = from_glm(tool->base_positions[i] + tool->normal * t);
 			tool->cap_verts[i] = apcad_mesh_weld_vertex(mesh, p, 1e-5f);
 		}
+		// Erase the original clicked face BEFORE wiring up the new cap/side
+		// edges below, not after. Each of its boundary edges (base[i],
+		// base[i+1]) still borders 2 faces right now -- this face plus the
+		// adjacent original side wall -- which is already the max
+		// detect_and_create_faces allows an edge (apcad_mesh_edge_face_count
+		// tops out at 2). Add the new side edges first and the correct
+		// small side-quad loop still gets *traced* correctly, but
+		// detect_and_create_faces rejects it on the "an edge already
+		// bordering 2 faces can't take a third" check -- silently, since
+		// that box's own edges are already full and nothing ever revisits
+		// them once this face is erased a few lines later. Erasing first
+		// frees that second slot before the new edges exist, so the side
+		// walls attach to it as intended. This face is enclosed by the new
+		// cap + side walls either way -- the volume between base and cap is
+		// theirs to bound, not its -- so it stays gone regardless of when
+		// exactly this runs.
+		apcad_mesh_erase_face(mesh, tool->face);
+
 		// New cap loop edges plus the side edges connecting each original
 		// vertex to its offset counterpart. Each side quad (base[i],
 		// base[i+1], cap[i+1], cap[i]) is planar by construction (a
@@ -318,18 +336,6 @@ bool apcad_pushpull_tool_update(
 			apcad_mesh_add_edge(mesh, tool->cap_verts[i], tool->cap_verts[(i + 1) % count]);
 			apcad_mesh_add_edge(mesh, tool->base_verts[i], tool->cap_verts[i]);
 		}
-
-		// The original clicked face is now enclosed by the new cap + side
-		// walls -- the volume between base and cap is theirs to bound, not
-		// its. Left alive, it stays a real face sitting inside the new
-		// solid (its own auto-face detection never touches it: the new
-		// side edges each have one endpoint -- a cap vertex -- that was
-		// never part of this face's loop, so apcad_mesh_add_edge's own
-		// "erase a face when both new endpoints already lie on it" check
-		// never fires for it). Erasing it explicitly is the fix; its edges
-		// stay untouched, still bounding the new side walls on their other
-		// side.
-		apcad_mesh_erase_face(mesh, tool->face);
 
 		tool->geometry_created = true;
 		return true;
