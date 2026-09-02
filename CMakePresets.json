@@ -1,0 +1,37 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "apricotfields-windows-d3d12",
+      "displayName": "ApricotFields Windows D3D12",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build-windows-d3d12",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "D3D12",
+        "LANGUAGE_BINDING": "NONE"
+      }
+    },
+    {
+      "name": "apricotfields-windows-vulkan",
+      "displayName": "ApricotFields Windows Vulkan",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build-windows-vulkan",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Vulkan",
+        "LANGUAGE_BINDING": "NONE"
+      }
+    },
+    {
+      "name": "apricotfields-linux-vulkan",
+      "displayName": "ApricotFields Linux Vulkan",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-linux-vulkan",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Vulkan",
+        "LANGUAGE_BINDING": "NONE"
+      }
+    }
+  ]
+}

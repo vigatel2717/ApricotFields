@@ -2,7 +2,7 @@
 #ifndef APREND_RENDER_IMAGES_H
 #define APREND_RENDER_IMAGES_H
 
-#include "aprendbase.h"
+#include "aprenderer.h"
 
 /****************************************************
  * Apricot Render Images
@@ -161,6 +161,7 @@ void aprend_destroy_texture_view(aprend_texture_view view);
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view);
 APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view);
 spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view);
+aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view);
 
 #if __cplusplus
 }

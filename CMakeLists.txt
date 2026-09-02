@@ -7,7 +7,9 @@ add_library(ApricotFields STATIC
         src/apricotfields.cpp
         src/apricore.cpp
         src/render/aprend_internal.hpp
-        src/render/aprendscene.cpp
+        src/render/aprend_ext_internal.hpp
+        src/render/aprenderer.cpp
+        src/render/aprendcontext.cpp
         src/render/aprendorbitcamera.cpp
         src/render/aprendbuffers.cpp
         src/render/aprendimages_internal.hpp
@@ -15,33 +17,21 @@ add_library(ApricotFields STATIC
         src/render/aprendframes.cpp
         src/render/aprendcommands.cpp
         src/render/aprendpipeline.cpp
-        src/render/aprendbase.cpp
-        src/cad/apcad_internal.hpp
-        src/cad/apcadsolid.cpp
-        src/cad/apcadraycast.cpp
-        src/cad/apcadtools.cpp
-        src/cad/apcadmesh.cpp
-        src/cad/apcadinference.cpp
-        src/cad/apcaddraw.cpp
-        src/sync/apsync_internal.hpp
-        src/sync/apsyncnet.cpp
+        src/render/aprendextscene.cpp
+        #src/sync/apsync_internal.hpp
+        #src/sync/apsyncnet.cpp
         include/apricore.h
-        include/cad/apcadbase.h
-        include/cad/apcadsolid.h
-        include/cad/apcadraycast.h
-        include/cad/apcadtools.h
-        include/cad/apcadmesh.h
-        include/cad/apcadinference.h
-        include/cad/apcaddraw.h
-        include/render/aprendscene.h
+        include/render/aprenderer.h
+        include/render/aprendcontext.h
         include/render/aprendorbitcamera.h
-        include/render/aprendbase.h
         include/render/aprendbuffers.h
         include/render/aprendimages.h
         include/render/aprendframes.h
         include/render/aprendcommands.h
         include/render/aprendpipeline.h
-        include/sync/apsyncnet.h)
+        include/render/aprendextscene.h
+        #include/sync/apsyncnet.h
+        )
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -97,13 +87,11 @@ if (WIN32 OR (UNIX AND NOT APPLE))
 endif ()
 
 # GLM — header-only math library used internally by the C++ backends
-#find_package(glm REQUIRED)
-#target_link_libraries(ApricotFields PRIVATE glm::glm)
+set(GLM_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../.deps/glm-src")
 include(FetchContent)
 FetchContent_Declare(
         glm
-        GIT_REPOSITORY https://github.com/g-truc/glm.git
-        GIT_TAG        0.9.9.8
+        SOURCE_DIR ${GLM_DIR}
 )
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 FetchContent_MakeAvailable(glm)

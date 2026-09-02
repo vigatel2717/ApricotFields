@@ -564,4 +564,7 @@ void aprend_destroy_texture_view(aprend_texture_view view){
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) { return view ? view->view_type : APREND_TEXTURE_VIEW_TYPE_NONE; }
 APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) { return view ? view->dimension : APREND_TEXTURE_DIMENSION_1D; }
 spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view) { return view ? view->image_view : nullptr; }
+aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view) {
+	return view && view->dimension == APREND_TEXTURE_DIMENSION_2D ? view->texture._t2d : nullptr;
+}
 }

@@ -54,10 +54,11 @@ aprend_shader aprend_shader_read_from_file_spirv(
 	if (!sfs_file_exists(filename))
 		return nullptr;
 
-	aprend_shader_t *result = (aprend_shader_t *)malloc(sizeof(aprend_shader_t));
+	APREND_MALLOC__T(result, aprend_shader_t);
 	if (!result)
 		return nullptr;
-	result           = new (result) aprend_shader_t();
+	APREND_CONSTRUCT__T(result, aprend_shader_t);
+
 	result->instance = instance;
 
 	SPUDRESULT sr      = SPUD_SUCCESS;
@@ -106,15 +107,12 @@ aprend_shader aprend_shader_read_from_file_spirv(
 	return result;
 failedattempt:
 	printf("apricot: aprend_shader_read_from_file_spirv failed ('%s'): %s\n", filename, spudresult_str(sr));
-	result->~aprend_shader_t();
-	free(result);
+	APREND_DESTRUCT__T(result, aprend_shader_t);
 	return nullptr;
 }
 void aprend_shader_destroy(aprend_shader shader) {
-	if (shader) {
-		shader->~aprend_shader_t();
-		free(shader);
-	}
+	if (shader)
+		APREND_DESTRUCT__T(shader, aprend_shader_t);
 }
 
 aprend_graphics_pipeline aprend_graphics_pipeline_create(
@@ -125,10 +123,10 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	if (desc._vertex_layout.count > SPUDGPU_MAX_VERTEX_ATTRIBUTES)
 		return nullptr;
 
-	aprend_graphics_pipeline_t *result = (aprend_graphics_pipeline_t *)malloc(sizeof(aprend_graphics_pipeline_t));
+	APREND_MALLOC__T(result, aprend_graphics_pipeline_t);
 	if (!result)
 		return nullptr;
-	result = new (result) aprend_graphics_pipeline_t();
+	APREND_CONSTRUCT__T(result, aprend_graphics_pipeline_t);
 
 	result->desc     = desc;
 	result->instance = instance;
@@ -170,18 +168,15 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	SPUDRESULT sr = spudgpu_create_shader_pipeline(instance->desc.device, &pd, &result->pipeline);
 	if (SPUDFAIL(sr)) {
 		printf("apricot: aprend_graphics_pipeline_create failed: %s\n", spudresult_str(sr));
-		result->~aprend_graphics_pipeline_t();
-		free(result);
+		APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
 		return nullptr;
 	}
 
 	return result;
 }
 void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p) {
-	if (p) {
-		p->~aprend_graphics_pipeline_t();
-		free(p);
-	}
+	if (p)
+		APREND_DESTRUCT__T(p, aprend_graphics_pipeline_t);
 }
 aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p) { return p ? p->desc : aprend_graphics_pipeline_desc{}; }
 
