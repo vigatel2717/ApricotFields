@@ -4,6 +4,7 @@
 //
 
 #include "aprend_internal.hpp"
+#include "aprendimages_internal.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -888,7 +889,10 @@ spudgpu_image aprend_viewport_get_color_image(aprend_viewport vp) {
 		return nullptr;
 	if (!vp->is_offscreen)
 		return nullptr;
-	return aprend_texture2d_get_spudgpu_image(aprend_framebuffer_get_color_attachment_texture(vp->framebuffer, 0));
+	aprend_texture_view view = aprend_framebuffer_get_color_attachment(vp->framebuffer, 0);
+	if (!view)
+		return nullptr;
+	return aprend_texture2d_get_spudgpu_image(view->texture._t2d);
 }
 
 spudgpu_image_view aprend_viewport_get_color_image_view(aprend_viewport vp) {
@@ -896,7 +900,7 @@ spudgpu_image_view aprend_viewport_get_color_image_view(aprend_viewport vp) {
 		return nullptr;
 	if (!vp->is_offscreen)
 		return nullptr;
-	return aprend_texture2d_get_spudgpu_image_view(aprend_framebuffer_get_color_attachment_texture(vp->framebuffer, 0));
+	return aprend_texture_view_get_spudgpu_image_view(aprend_framebuffer_get_color_attachment(vp->framebuffer, 0));
 }
 
 aprend_framebuffer aprend_viewport_get_framebuffer(aprend_viewport vp) {
@@ -932,7 +936,7 @@ void aprend_viewport_record(
 	SPUDGPU_SCISSOR_RECT scissor{0.f, 0.f, static_cast<float>(vp->render_width), static_cast<float>(vp->render_height)};
 
 	spudgpu_color_attachment_desc color{};
-	color.image_view     = aprend_texture2d_get_spudgpu_image_view(aprend_framebuffer_get_color_attachment_texture(vp->framebuffer, 0));
+	color.image_view     = aprend_texture_view_get_spudgpu_image_view(aprend_framebuffer_get_color_attachment(vp->framebuffer, 0));
 	color.load_op        = SPUDGPU_LOAD_OP_CLEAR;
 	color.store_op       = SPUDGPU_STORE_OP_STORE;
 	color.clear_color[0] = 0.10f;
@@ -955,16 +959,17 @@ void aprend_viewport_record(
 	// a resize); every frame after that it's already sitting in that layout
 	// from the end of the previous render pass, so no further barrier is
 	// needed at all.
-	aprend_texture2d depth_tex    = aprend_framebuffer_get_depth_attachment_texture(vp->framebuffer);
-	spudgpu_image_view depth_view = depth_tex ? aprend_texture2d_get_spudgpu_image_view(depth_tex) : nullptr;
+	aprend_texture_view depth_tex_view = aprend_framebuffer_get_depth_attachment(vp->framebuffer);
+	spudgpu_image_view depth_view      = aprend_texture_view_get_spudgpu_image_view(depth_tex_view);
 	if (depth_view && vp->depth_image_fresh) {
 		spudgpu_cmd_image_barrier(
-		    cmd, aprend_texture2d_get_spudgpu_image(depth_tex), SPUDGPU_IMAGE_LAYOUT_UNDEFINED, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+		    cmd, aprend_texture2d_get_spudgpu_image(depth_tex_view->texture._t2d), SPUDGPU_IMAGE_LAYOUT_UNDEFINED,
+		    SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 		vp->depth_image_fresh = false;
 	}
 
 	spudgpu_rendering_begin_desc rp{};
-	rp.color_attachments      = &color;
+	rp.color_attachments[0]   = color;
 	rp.color_attachment_count = 1;
 	rp.width                  = vp->render_width;
 	rp.height                 = vp->render_height;
@@ -979,8 +984,8 @@ void aprend_viewport_record(
 	}
 	spudgpu_cmd_begin_rendering(cmd, &rp);
 
-	spudgpu_set_viewports(cmd, 0, 1, &gpu_vp);
-	spudgpu_set_scissor_rects(cmd, 0, 1, &scissor);
+	spudgpu_cmd_set_viewports(cmd, 0, 1, &gpu_vp);
+	spudgpu_cmd_set_scissor_rects(cmd, 0, 1, &scissor);
 
 	for (aprend_node_t *node : vp->scene->all_nodes) {
 		for (aprend_geometry_t *geom : node->geometries) {
@@ -1022,14 +1027,14 @@ void aprend_viewport_record(
 			spudgpu_buffer_view vbvs[SPUDGPU_MAX_VERTEX_BINDINGS];
 			for (uint32_t i = 0; i < binding_count; ++i)
 				vbvs[i] = aprend_vertex_buffer_get_spudgpu_buffer_view(geom->mesh->vertex_buffers[i]);
-			spudgpu_set_vertex_buffers(cmd, 0, binding_count, vbvs);
+			spudgpu_cmd_set_vertex_buffers(cmd, 0, binding_count, vbvs);
 
 			if (geom->mesh->index_buffer) {
 				spudgpu_buffer_view ibv = aprend_index_buffer_get_spudgpu_buffer_view(geom->mesh->index_buffer);
-				spudgpu_set_index_buffer(cmd, ibv);
-				spudgpu_draw_indexed(cmd, geom->mesh->index_count, 0, 0);
+				spudgpu_cmd_set_index_buffer(cmd, ibv);
+				spudgpu_cmd_draw_indexed(cmd, geom->mesh->index_count, 0, 0);
 			} else {
-				spudgpu_draw(cmd, geom->mesh->vertex_count, 0);
+				spudgpu_cmd_draw(cmd, geom->mesh->vertex_count, 0);
 			}
 		}
 	}
