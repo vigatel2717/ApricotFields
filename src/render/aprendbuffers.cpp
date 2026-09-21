@@ -4,30 +4,6 @@
 
 #include <spudgpu.h>
 
-bool aprend_buffer_context_t::AvailableSpace(uint32_t offset, uint32_t size) const {
-	/*bool available = true;
-	for (size_t i=0;i<allocated_ranges.size();++i)
-	{
-	    const AprendBufferContextRange &range = allocated_ranges[i];
-	    if (offset + size <= range.offset)
-	        available = true;
-	}
-	return available;*/
-	return false; // Not implemented yet
-}
-
-uint32_t aprend_buffer_context_t::GetEndAvailableOffset() {
-	/*uint32_t end_offset = 0;
-	for (size_t i=0;i<allocated_ranges.size();++i)
-	{
-	    const AprendBufferContextRange &range = allocated_ranges[i];
-	    if (range.offset + range.size > end_offset)
-	        end_offset = range.offset + range.size;
-	}
-	return end_offset;*/
-	return 0; // Not implemented yet
-}
-
 aprend_uniform_buffer_t::~aprend_uniform_buffer_t() {
 	spudgpu_unmap_buffer(this->buffer);
 	spudgpu_destroy_buffer_view(this->buffer_view);
@@ -52,45 +28,6 @@ aprend_storage_buffer_t::~aprend_storage_buffer_t() {
 }
 
 extern "C" {
-
-aprend_buffer_context
-aprend_buffer_context_create(aprend_instance instance, uint64_t initial_capacity, SPUDGPU_BUFFER_USAGE usage, SPUDGPU_MEMORY_FLAGS flags) {
-	/* Implementation-specific buffer context creation logic goes here. */
-	if (!instance)
-		return nullptr;
-	aprend_buffer_context_t *result = (aprend_buffer_context_t *)calloc(1, sizeof(aprend_buffer_context_t));
-	result->instance                = instance;
-
-	result->buffer_desc.usage        = usage;
-	result->buffer_desc.memory_flags = flags;
-	result->buffer_desc.size         = initial_capacity;
-	if (SPUDFAIL(spudgpu_create_buffer(result->instance->desc.device, &result->buffer_desc, &result->buffer))) {
-		free(result);
-		return nullptr;
-	}
-
-	return result;
-}
-void aprend_buffer_context_destroy(aprend_buffer_context context) {
-	if (!context)
-		return;
-	spudgpu_destroy_buffer(context->buffer);
-	free(context);
-}
-uint64_t aprend_buffer_context_get_current_capacity(aprend_buffer_context context) {
-	if (context) {
-		if (context->buffer) {
-			spudgpu_buffer_desc desc = {0};
-			spudgpu_get_buffer_desc(context->buffer, &desc);
-			return desc.size;
-		}
-	}
-	return 0;
-}
-uint64_t aprend_buffer_context_shrink_to_fit(aprend_buffer_context context) {
-	/* Implementation-specific buffer context shrink-to-fit logic goes here. */
-	return context ? aprend_buffer_context_get_current_capacity(context) : 0;
-}
 
 uint32_t aprend_uniform_type_get_size(APREND_UNIFORM_TYPE type) {
 	switch (type) {
@@ -179,7 +116,6 @@ void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer) {
 	}
 }
 spudgpu_buffer_view aprend_uniform_buffer_get_spudgpu_buffer_view(aprend_uniform_buffer buffer) { return buffer ? buffer->buffer_view : NULL; }
-aprend_buffer_context aprend_uniform_buffer_get_buffer_context(aprend_uniform_buffer buffer) { return nullptr; }
 bool aprend_uniform_buffer_update(aprend_uniform_buffer buffer, uint32_t local_offset, uint32_t size, void *pData) {
 	if (!buffer || !pData || size == 0)
 		return false;

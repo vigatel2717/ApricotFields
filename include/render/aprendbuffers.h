@@ -2,7 +2,7 @@
 #ifndef APREND_BUFFERS_H
 #define APREND_BUFFERS_H
 
-#include "aprendbase.h"
+#include "aprenderer.h"
 #include "stdint.h"
 
 /****************************************************
@@ -34,25 +34,10 @@ typedef struct APREND_DEFAULT_VERTEX {
 	float color[4];
 } APREND_DEFAULT_VERTEX;
 
-typedef struct aprend_buffer_context_t *aprend_buffer_context;
 typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
 typedef struct aprend_index_buffer_t *aprend_index_buffer;
 typedef struct aprend_uniform_buffer_t *aprend_uniform_buffer;
 typedef struct aprend_storage_buffer_t *aprend_storage_buffer;
-
-typedef uint32_t APREND_BUFFER_CONTEXT_FLAGS;
-enum {
-	APREND_BUFFER_CONTEXT_FLAG_DYNAMIC = 1, /* buffer memory is host-visible and coherent; updated frequently from the CPU */
-	APREND_BUFFER_CONTEXT_FLAG_STATIC  = 2  /* buffer memory is device-local; updated rarely or never from the CPU */
-};
-aprend_buffer_context aprend_buffer_context_create(
-    aprend_instance instance,
-    uint64_t initial_capacity,
-    SPUDGPU_BUFFER_USAGE usage,
-    SPUDGPU_MEMORY_FLAGS flags);
-uint64_t aprend_buffer_context_get_current_capacity(aprend_buffer_context context);
-uint64_t aprend_buffer_context_shrink_to_fit(aprend_buffer_context context);
-void aprend_buffer_context_destroy(aprend_buffer_context context);
 
 typedef uint32_t APREND_UNIFORM_TYPE;
 enum {
@@ -90,7 +75,6 @@ aprend_uniform_buffer aprend_uniform_buffer_create(
     const aprend_uniform_layout *layout);
 void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer);
 spudgpu_buffer_view aprend_uniform_buffer_get_spudgpu_buffer_view(aprend_uniform_buffer buffer);
-aprend_buffer_context aprend_uniform_buffer_get_buffer_context(aprend_uniform_buffer buffer);
 bool aprend_uniform_buffer_update(
     aprend_uniform_buffer buffer,
     uint32_t local_offset,

@@ -2,7 +2,7 @@
 #ifndef APSYNC_NET_H
 #define APSYNC_NET_H
 
-#include "render/aprendscene.h"
+#include "render/aprenderer.h"
 #include <stdbool.h>
 #include <stdint.h>
 
