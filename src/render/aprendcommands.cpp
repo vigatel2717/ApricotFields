@@ -136,12 +136,12 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			vertex_buffer_views.reserve(p._vertex_buffer_count);
 			for (uint32_t i = 0; i < p._vertex_buffer_count; ++i)
 				vertex_buffer_views.push_back(p._vertex_buffers[i]->buffer_view);
-			spudgpu_set_vertex_buffers(cmd, p._start_slot, p._vertex_buffer_count, vertex_buffer_views.data());
+			spudgpu_cmd_set_vertex_buffers(cmd, p._start_slot, p._vertex_buffer_count, vertex_buffer_views.data());
 			break;
 		}
 		case APREND_COMMAND_SET_INDEX_BUFFER: {
 			const auto &p = command._params._set_index_buffer;
-			spudgpu_set_index_buffer(cmd, p._index_buffer->buffer_view);
+			spudgpu_cmd_set_index_buffer(cmd, p._index_buffer->buffer_view);
 			break;
 		}
 		case APREND_COMMAND_SET_SHADER_PIPELINE: {
@@ -151,34 +151,34 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 		}
 		case APREND_COMMAND_DRAW: {
 			const auto &p = command._params._draw;
-			spudgpu_draw(cmd, p._vertex_count, p._start_vertex_location);
+			spudgpu_cmd_draw(cmd, p._vertex_count, p._start_vertex_location);
 			break;
 		}
 		case APREND_COMMAND_DRAW_INDEXED: {
 			const auto &p = command._params._draw_indexed;
-			spudgpu_draw_indexed(cmd, p._index_count, p._start_index_location, p._base_vertex_location);
+			spudgpu_cmd_draw_indexed(cmd, p._index_count, p._start_index_location, p._base_vertex_location);
 			break;
 		}
 		case APREND_COMMAND_DRAW_INSTANCED: {
 			const auto &p = command._params._draw_instanced;
-			spudgpu_draw_instanced(cmd, p._vertex_count_per_instance, p._instance_count, p._start_vertex_location, p._start_instance_location);
+			spudgpu_cmd_draw_instanced(cmd, p._vertex_count_per_instance, p._instance_count, p._start_vertex_location, p._start_instance_location);
 			break;
 		}
 		case APREND_COMMAND_DRAW_INSTANCED_INDEXED: {
 			const auto &p = command._params._draw_indexed_instanced;
-			spudgpu_draw_indexed_instanced(
+			spudgpu_cmd_draw_indexed_instanced(
 			    cmd, p._index_count_per_instance, p._instance_count, p._start_index_location, p._base_vertex_location,
 			    p._start_instance_location);
 			break;
 		}
 		case APREND_COMMAND_SET_VIEWPORTS: {
 			const auto &p = command._params._set_viewports;
-			spudgpu_set_viewports(cmd, p._first_viewport, p._viewport_count, p._viewports);
+			spudgpu_cmd_set_viewports(cmd, p._first_viewport, p._viewport_count, p._viewports);
 			break;
 		}
 		case APREND_COMMAND_SET_SCISSOR_RECTS: {
 			const auto &p = command._params._set_scissor_rects;
-			spudgpu_set_scissor_rects(cmd, p._first_scissor_rect, p._scissor_rect_count, p._scissor_rects);
+			spudgpu_cmd_set_scissor_rects(cmd, p._first_scissor_rect, p._scissor_rect_count, p._scissor_rects);
 			break;
 		}
 		case APREND_COMMAND_CLEAR_COLORS: {

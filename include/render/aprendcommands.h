@@ -15,7 +15,7 @@ typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
 
 typedef uint32_t APREND_COMMAND_TYPE;
 
-enum APREND_COMMAND_TYPE {
+enum {
 	APREND_COMMAND_NONE                   = 0,
 	APREND_COMMAND_SET_VERTEX_BUFFERS     = 1,
 	APREND_COMMAND_SET_INDEX_BUFFER       = 2,
