@@ -7,29 +7,24 @@ add_library(ApricotFields STATIC
         src/apricotfields.cpp
         src/apricore.cpp
         src/render/aprend_internal.hpp
-        src/render/aprend_ext_internal.hpp
-        src/render/aprenderer.cpp
         src/render/aprendcontext.cpp
-        src/render/aprendorbitcamera.cpp
         src/render/aprendbuffers.cpp
         src/render/aprendimages_internal.hpp
         src/render/aprendimages.cpp
         src/render/aprendframes.cpp
         src/render/aprendcommands.cpp
         src/render/aprendpipeline.cpp
-        src/render/aprendextscene.cpp
+        src/render/aprendswapchain.cpp
         #src/sync/apsync_internal.hpp
         #src/sync/apsyncnet.cpp
         include/apricore.h
-        include/render/aprenderer.h
         include/render/aprendcontext.h
-        include/render/aprendorbitcamera.h
         include/render/aprendbuffers.h
         include/render/aprendimages.h
         include/render/aprendframes.h
         include/render/aprendcommands.h
         include/render/aprendpipeline.h
-        include/render/aprendextscene.h
+        include/render/aprendswapchain.h
         #include/sync/apsyncnet.h
         )
 

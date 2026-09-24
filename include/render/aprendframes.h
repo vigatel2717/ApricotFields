@@ -47,13 +47,6 @@ bool aprend_framebuffer_resize(
     aprend_framebuffer framebuffer,
     uint32_t width,
     uint32_t height);
-bool aprend_framebuffer_read_pixel(
-    aprend_framebuffer framebuffer,
-    uint32_t attachment_index,
-    uint32_t x,
-    uint32_t y,
-    void *out_data,
-    uint64_t data_size);
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
     float r,

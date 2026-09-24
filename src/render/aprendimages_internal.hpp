@@ -22,7 +22,9 @@ template <typename Fn> static bool aprend_submit_immediate(aprend_instance insta
 		return false;
 	}
 
+	spudgpu_begin_command_list(cmd);
 	record(cmd);
+	spudgpu_end_command_list(cmd);
 
 	spudgpu_command_queue queue      = spudgpu_get_graphics_queue(instance->desc.device);
 	spudgpu_command_list cmd_lists[] = {cmd};

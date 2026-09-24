@@ -2,15 +2,16 @@
 #define APREND_INTERNAL_HPP
 
 /* Internal header — never included outside ApricotFields/src/render/.
- * Defines the concrete structs behind every opaque handle in aprendscene.h
- * and aprendbase.h, and provides zero-cost GLM conversion helpers. */
+ * Defines the concrete structs behind Aprend's opaque handles, and provides
+ * zero-cost GLM conversion helpers. */
 
 #include "aprimath.h"
 #include "render/aprendbuffers.h"
 #include "render/aprendcommands.h"
-#include "render/aprenderer.h"
+#include "render/aprendcontext.h"
 #include "render/aprendframes.h"
 #include "render/aprendpipeline.h"
+#include "render/aprendswapchain.h"
 
 #include <spudgpu.h>
 
@@ -83,7 +84,50 @@ typedef struct aprend_command_list_t {
 	aprend_instance instance{nullptr};
 	spudgpu_command_list cmd_list{nullptr};
 	std::vector<APREND_COMMAND> commands{};
+	/* Owned copies of each BEGIN_RENDERING's color target array, so recorded
+	 * commands never point at caller memory. Each inner vector's buffer stays
+	 * put when the outer vector grows (moves don't reallocate it). */
+	std::vector<std::vector<aprend_color_target>> color_target_storage{};
+	/* Set by aprend_send_command on a malformed command; fails compile until reset. */
+	bool recording_error{false};
+
+	/* Per-texture layout transitions of the last compile. Compiling never
+	 * touches aprend_texture2d_t::current_layout (the layout the GPU will see
+	 * once everything submitted so far has run) - only a successful
+	 * aprend_command_list_submit commits final_layout to it. initial_layout is
+	 * what this list's first barrier assumes, checked against current_layout
+	 * at submit. */
+	struct layout_use {
+		aprend_texture2d texture;
+		SPUDGPU_IMAGE_LAYOUT initial_layout;
+		SPUDGPU_IMAGE_LAYOUT final_layout;
+	};
+	std::vector<layout_use> layout_uses{};
+	/* The last compile succeeded, so the spudgpu list is closed and submittable. */
+	bool compiled{false};
+	/* Set by a compiled APREND_COMMAND_PRESENT_TEXTURE: the swap chain and the
+	 * back buffer index the list copies into. Submit uses the swap-chain-
+	 * synchronized path for such a list. */
+	aprend_swap_chain present_swap_chain{nullptr};
+	uint32_t present_image_index{0};
 } aprend_command_list_t;
+
+#define APREND_SWAP_CHAIN_NO_IMAGE 0xFFFFFFFFu
+
+typedef struct aprend_swap_chain_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_swap_chain_t() = default;
+	~aprend_swap_chain_t();
+	aprend_instance instance{nullptr};
+	aprend_swap_chain_desc desc{};
+	spudgpu_swap_chain swap_chain{nullptr};
+	/* APREND_SWAP_CHAIN_NO_IMAGE until aprend_swap_chain_acquire. */
+	uint32_t acquired_image{APREND_SWAP_CHAIN_NO_IMAGE};
+	/* A list presenting into acquired_image has been submitted. */
+	bool submitted{false};
+} aprend_swap_chain_t;
 
 typedef struct aprend_uniform_buffer_t {
 #if _DEBUG
@@ -157,6 +201,21 @@ typedef struct aprend_graphics_pipeline_t {
 	aprend_graphics_pipeline_desc desc{};
 	aprend_instance instance{nullptr};
 	spudgpu_shader_pipeline pipeline{nullptr};
+	/* Descriptor set 0's layout, built from desc._uniform_bindings; nullptr
+	 * when the pipeline declares none. */
+	spudgpu_descriptor_set_layout uniform_layout{nullptr};
 } aprend_graphics_pipeline_t;
+
+typedef struct aprend_uniform_set_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_uniform_set_t() = default;
+	~aprend_uniform_set_t();
+	aprend_graphics_pipeline pipeline{nullptr};
+	/* Own pool, sized for exactly this one set; destroying it frees the set. */
+	spudgpu_descriptor_pool pool{nullptr};
+	spudgpu_descriptor_set set{nullptr};
+} aprend_uniform_set_t;
 
 #endif // APREND_INTERNAL_HPP

@@ -2,7 +2,7 @@
 #ifndef APREND_BUFFERS_H
 #define APREND_BUFFERS_H
 
-#include "aprenderer.h"
+#include "aprendcontext.h"
 #include "stdint.h"
 
 /****************************************************
@@ -95,7 +95,6 @@ enum {
 	APREND_BUFFER_ELEMENT_TYPE_INT2      = 5,
 	APREND_BUFFER_ELEMENT_TYPE_INT3      = 6,
 	APREND_BUFFER_ELEMENT_TYPE_INT4      = 7,
-	APREND_BUFFER_ELEMENT_TYPE_UNIQUE_ID = 8 /* special type for picking; treated as uint32 behind the scenes, but semantically distinct from a regular uint */
 };
 uint32_t aprend_buffer_element_type_get_size(APREND_BUFFER_ELEMENT_TYPE type);
 

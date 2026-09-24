@@ -4,9 +4,14 @@
 #include "aprendimages_internal.hpp"
 
 // Vulkan-aligned aspect bits (COLOR=1, DEPTH=2, STENCIL=4) — SpudGPU doesn't
-// expose a named enum for these yet; mirrors the raw values already used at
-// image-view creation sites elsewhere (e.g. aprendscene.cpp's offscreen
-// render targets).
+// expose a named enum for these yet.
+// aprend_texture*_create pass desc->usage straight through as
+// SPUDGPU_IMAGE_USAGE, which is only right while the bits line up.
+static_assert(APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE == SPUDGPU_IMAGE_USAGE_SAMPLED);
+static_assert(APREND_TEXTURE_USAGE_BIT_RENDER_TARGET == SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT);
+static_assert(APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL == SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT);
+static_assert(APREND_TEXTURE_USAGE_BIT_STORAGE == SPUDGPU_IMAGE_USAGE_STORAGE);
+
 static uint64_t aprend_texture2d_view_aspect_mask(SPUDGPU_FORMAT format) {
 	switch (format) {
 	case SPUDGPU_FORMAT_D24_UNORM_S8_UINT:

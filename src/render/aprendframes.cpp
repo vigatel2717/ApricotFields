@@ -153,26 +153,6 @@ bool aprend_framebuffer_resize(
 	framebuffer->desc.height = height;
 	return aprend_framebuffer_create_attachments(framebuffer);
 }
-bool aprend_framebuffer_read_pixel(
-    aprend_framebuffer framebuffer,
-    uint32_t attachment_index,
-    uint32_t x,
-    uint32_t y,
-    void *out_data,
-    uint64_t data_size) {
-	if (!(framebuffer && out_data && data_size))
-		return false;
-	if (attachment_index >= framebuffer->color_attachments.size())
-		return false;
-
-	aprend_texture2d attachment = framebuffer->color_attachments[attachment_index]->texture._t2d;
-	uint32_t bytes_per_pixel    = spudgpu_format_bit_count(attachment->desc.format) / 8;
-	if (data_size < bytes_per_pixel)
-		return false;
-
-	void *pixel = out_data;
-	return aprend_texture2d_get_data(attachment, x, y, 1, 1, &pixel);
-}
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
     float r,

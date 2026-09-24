@@ -79,7 +79,7 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 	}
 
 	{
-		spudgpu_buffer_desc bd;
+		spudgpu_buffer_desc bd{};
 		bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
 		bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
 		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT | SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
@@ -162,7 +162,7 @@ aprend_vertex_buffer aprend_vertex_buffer_create(aprend_instance instance, const
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 	{
-		spudgpu_buffer_desc bd;
+		spudgpu_buffer_desc bd{};
 		bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
 		bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
 		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT | SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
@@ -244,7 +244,7 @@ aprend_index_buffer aprend_index_buffer_create(aprend_instance instance, APREND_
 
 	SPUDRESULT sr = SPUD_SUCCESS;
 	{
-		spudgpu_buffer_desc bd;
+		spudgpu_buffer_desc bd{};
 		bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
 		bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
 		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT | SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
@@ -317,7 +317,7 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 		return nullptr;
 
 	{
-		spudgpu_buffer_desc bd;
+		spudgpu_buffer_desc bd{};
 		bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
 		bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
 		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;

@@ -2,7 +2,7 @@
 #ifndef APREND_RENDER_IMAGES_H
 #define APREND_RENDER_IMAGES_H
 
-#include "aprenderer.h"
+#include "aprendcontext.h"
 
 /****************************************************
  * Apricot Render Images
@@ -48,32 +48,29 @@ typedef struct aprend_texture2d_desc {
 
 typedef struct aprend_texture2d_t *aprend_texture2d;
 aprend_texture2d aprend_texture2d_create(
-    aprend_instance instance,
-    const aprend_texture2d_desc *desc);
+	aprend_instance instance,
+	const aprend_texture2d_desc *desc);
 void aprend_texture2d_destroy(aprend_texture2d texture);
 aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture);
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
 bool aprend_texture2d_update(
-    aprend_texture2d texture,
-    uint32_t x_offset,
-    uint32_t y_offset,
-    uint32_t width,
-    uint32_t height,
-    void **ppData);
+	aprend_texture2d texture,
+	uint32_t x_offset,
+	uint32_t y_offset,
+	uint32_t width,
+	uint32_t height,
+	void **ppData);
 bool aprend_texture2d_get_data(
-    aprend_texture2d texture,
-    uint32_t x_offset,
-    uint32_t y_offset,
-    uint32_t width,
-    uint32_t height,
-    void **ppData);
+	aprend_texture2d texture,
+	uint32_t x_offset,
+	uint32_t y_offset,
+	uint32_t width,
+	uint32_t height,
+	void **ppData);
 bool aprend_texture2d_resize(
-    aprend_texture2d texture,
-    uint32_t new_width,
-    uint32_t new_height);
-
-
-
+	aprend_texture2d texture,
+	uint32_t new_width,
+	uint32_t new_height);
 
 typedef struct aprend_texture3d_desc {
 	uint32_t width;
@@ -100,35 +97,35 @@ typedef struct aprend_texture3d_desc {
 
 typedef struct aprend_texture3d_t *aprend_texture3d;
 aprend_texture3d aprend_texture3d_create(
-    aprend_instance instance,
-    const aprend_texture3d_desc *desc);
+	aprend_instance instance,
+	const aprend_texture3d_desc *desc);
 void aprend_texture3d_destroy(aprend_texture3d texture);
 aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture);
 spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture);
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
 bool aprend_texture3d_update(
-    aprend_texture3d texture,
-    uint32_t x_offset,
-    uint32_t y_offset,
-    uint32_t z_offset,
-    uint32_t width,
-    uint32_t height,
-    uint32_t depth,
-    void **ppData);
+	aprend_texture3d texture,
+	uint32_t x_offset,
+	uint32_t y_offset,
+	uint32_t z_offset,
+	uint32_t width,
+	uint32_t height,
+	uint32_t depth,
+	void **ppData);
 bool aprend_texture3d_get_data(
-    aprend_texture3d texture,
-    uint32_t x_offset,
-    uint32_t y_offset,
-    uint32_t z_offset,
-    uint32_t width,
-    uint32_t height,
-    uint32_t depth,
-    void **ppData);
+	aprend_texture3d texture,
+	uint32_t x_offset,
+	uint32_t y_offset,
+	uint32_t z_offset,
+	uint32_t width,
+	uint32_t height,
+	uint32_t depth,
+	void **ppData);
 bool aprend_texture3d_resize(
-    aprend_texture3d texture,
-    uint32_t new_width,
-    uint32_t new_height,
-    uint32_t new_depth);
+	aprend_texture3d texture,
+	uint32_t new_width,
+	uint32_t new_height,
+	uint32_t new_depth);
 
 typedef uint32_t APREND_TEXTURE_DIMENSION;
 enum {
@@ -152,16 +149,32 @@ enum {
 typedef struct aprend_texture_view_t *aprend_texture_view;
 
 aprend_texture_view aprend_texture_view_create_2d(
-    aprend_texture2d texture,
-    APREND_TEXTURE_VIEW_TYPE type);
+	aprend_texture2d texture,
+	APREND_TEXTURE_VIEW_TYPE type);
 aprend_texture_view aprend_texture_view_create_3d(
-    aprend_texture3d texture,
-    APREND_TEXTURE_VIEW_TYPE type);
+	aprend_texture3d texture,
+	APREND_TEXTURE_VIEW_TYPE type);
 void aprend_destroy_texture_view(aprend_texture_view view);
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view);
 APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view);
 spudgpu_image_view aprend_texture_view_get_spudgpu_image_view(aprend_texture_view view);
 aprend_texture2d aprend_texture_view_get_texture2d(aprend_texture_view view);
+
+typedef struct aprend_color_target {
+	aprend_texture_view view;
+	aprend_texture_view resolve_view; // MSAA resolve, NULL if no MSAA.
+	SPUDGPU_LOAD_OP load_op;
+	SPUDGPU_STORE_OP store_op;
+	float clear_color[4];
+} aprend_color_target;
+
+typedef struct aprend_depth_target {
+	aprend_texture_view view;
+	SPUDGPU_LOAD_OP depth_load_op, stencil_load_op;
+	SPUDGPU_STORE_OP depth_store_op, stencil_store_op;
+	float clear_depth;
+	uint32_t clear_stencil;
+} aprend_depth_target;
 
 #if __cplusplus
 }
