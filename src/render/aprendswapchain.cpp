@@ -11,6 +11,8 @@ aprend_swap_chain_t::~aprend_swap_chain_t() {
 }
 
 static SPUDRESULT aprend_swap_chain_create_native(aprend_swap_chain_t *sc) {
+	if (!sc)
+		return SPUDRESULT_GENERAL_FAILURE;
 	spudgpu_swap_chain_desc scd{};
 	scd.surface         = sc->desc.surface;
 	scd.queue           = sc->desc.queue;
@@ -28,9 +30,11 @@ static SPUDRESULT aprend_swap_chain_create_native(aprend_swap_chain_t *sc) {
 extern "C" {
 
 aprend_swap_chain aprend_swap_chain_create(
-    aprend_instance instance,
-    const aprend_swap_chain_desc *desc) {
-	if (!instance || !desc || !desc->surface || !desc->queue || !desc->width || !desc->height)
+	aprend_instance instance,
+	const aprend_swap_chain_desc *desc) {
+	if (!instance || !desc)
+		return nullptr;
+	if (!desc->surface || !desc->queue || !desc->width || !desc->height)
 		return nullptr;
 
 	APREND_MALLOC__T(result, aprend_swap_chain_t);
@@ -54,9 +58,9 @@ void aprend_swap_chain_destroy(aprend_swap_chain swap_chain) {
 		APREND_DESTRUCT__T(swap_chain, aprend_swap_chain_t);
 }
 bool aprend_swap_chain_resize(
-    aprend_swap_chain swap_chain,
-    uint32_t width,
-    uint32_t height) {
+	aprend_swap_chain swap_chain,
+	uint32_t width,
+	uint32_t height) {
 	if (!swap_chain || !width || !height)
 		return false;
 	if (swap_chain->swap_chain && width == swap_chain->desc.width && height == swap_chain->desc.height)
@@ -81,8 +85,8 @@ bool aprend_swap_chain_resize(
 	return true;
 }
 bool aprend_swap_chain_get_desc(
-    aprend_swap_chain swap_chain,
-    aprend_swap_chain_desc *out_desc) {
+	aprend_swap_chain swap_chain,
+	aprend_swap_chain_desc *out_desc) {
 	if (!swap_chain || !out_desc)
 		return false;
 	*out_desc = swap_chain->desc;
@@ -90,7 +94,9 @@ bool aprend_swap_chain_get_desc(
 }
 
 bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain) {
-	if (!swap_chain || !swap_chain->swap_chain)
+	if (!swap_chain)
+		return false;
+	if (!swap_chain->swap_chain)
 		return false;
 	if (swap_chain->acquired_image != APREND_SWAP_CHAIN_NO_IMAGE) {
 		if (swap_chain->submitted) {
@@ -106,7 +112,9 @@ bool aprend_swap_chain_acquire(aprend_swap_chain swap_chain) {
 	return true;
 }
 bool aprend_swap_chain_present(aprend_swap_chain swap_chain) {
-	if (!swap_chain || !swap_chain->swap_chain)
+	if (!swap_chain)
+		return false;
+	if (!swap_chain->swap_chain)
 		return false;
 	if (swap_chain->acquired_image == APREND_SWAP_CHAIN_NO_IMAGE || !swap_chain->submitted) {
 		printf("aprend: aprend_swap_chain_present without a submitted list presenting into the acquired back buffer\n");
