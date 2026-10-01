@@ -10,5 +10,4 @@ UseTab: ForContinuationAndIndentation
 
 BinPackParameters: AlwaysOnePerLine
 BreakAfterOpenBracketFunction: true
-BreakBeforeCloseBracketFunction: false
 ColumnLimit: 160

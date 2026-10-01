@@ -7,10 +7,10 @@
 // expose a named enum for these yet.
 // aprend_texture*_create pass desc->usage straight through as
 // SPUDGPU_IMAGE_USAGE, which is only right while the bits line up.
-static_assert(APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE == SPUDGPU_IMAGE_USAGE_SAMPLED);
-static_assert(APREND_TEXTURE_USAGE_BIT_RENDER_TARGET == SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT);
-static_assert(APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL == SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT);
-static_assert(APREND_TEXTURE_USAGE_BIT_STORAGE == SPUDGPU_IMAGE_USAGE_STORAGE);
+static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_SAMPLED));
+static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_RENDER_TARGET) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_COLOR_ATTACHMENT));
+static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT));
+static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_STORAGE) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_STORAGE));
 
 static uint64_t aprend_texture2d_view_aspect_mask(SPUDGPU_FORMAT format) {
 	switch (format) {
@@ -117,7 +117,9 @@ bool aprend_texture2d_update(
     uint32_t width,
     uint32_t height,
     void **ppData) {
-	if (!(texture && width && height && ppData && *ppData))
+	if (!(texture && width && height && ppData))
+		return false;
+	if (!(*ppData))
 		return false;
 	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height)
 		return false;

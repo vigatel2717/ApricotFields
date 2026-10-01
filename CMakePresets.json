@@ -32,6 +32,27 @@
         "GRAPHICS_BACKEND": "Vulkan",
         "LANGUAGE_BINDING": "NONE"
       }
+    },
+    {
+      "name": "apricotfields-macos-metal",
+      "displayName": "ApricotFields macOS Metal",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build-macos-metal",
+      "cacheVariables": {
+        "GRAPHICS_BACKEND": "Metal",
+        "LANGUAGE_BINDING": "NONE",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "apricotfields-macos-metal-debug",
+      "displayName": "ApricotFields macOS Metal (Debug)",
+      "inherits": "apricotfields-macos-metal",
+      "binaryDir": "${sourceDir}/build-macos-metal-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     }
   ]
 }
