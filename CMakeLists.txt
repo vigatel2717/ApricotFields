@@ -15,6 +15,10 @@ add_library(ApricotFields STATIC
         src/render/aprendcommands.cpp
         src/render/aprendpipeline.cpp
         src/render/aprendswapchain.cpp
+        src/archive/aparchive_internal.hpp
+        src/archive/aparchive.cpp
+        src/audio/apaudio.cpp
+        src/math/apmathbvh.cpp
         #src/sync/apsync_internal.hpp
         #src/sync/apsyncnet.cpp
         include/apricore.h
@@ -25,6 +29,9 @@ add_library(ApricotFields STATIC
         include/render/aprendcommands.h
         include/render/aprendpipeline.h
         include/render/aprendswapchain.h
+        include/archive/aparchive.h
+        include/audio/apaudio.h
+        include/math/apmathbvh.h
         #include/sync/apsyncnet.h
         )
 
@@ -95,3 +102,40 @@ FetchContent_Declare(
 set(CMAKE_POLICY_VERSION_MINIMUM 3.10)
 FetchContent_MakeAvailable(glm)
 target_link_libraries(ApricotFields PUBLIC glm::glm)
+
+# libdeflate - DEFLATE and CRC-32 for ApArchive. Vendored under
+# eqdev/.deps/libdeflate (git checkout of tag v1.26), like glm and
+# SPIRV-Cross. Pinned on purpose: DEFLATE output is part of what makes an
+# archive byte-identical, and a libdeflate upgrade can change it. Only the
+# static library is built. Gzip support stays on because libdeflate only
+# compiles its CRC-32 with it; the zlib wrapper is off.
+set(LIBDEFLATE_BUILD_STATIC_LIB ON CACHE BOOL "" FORCE)
+set(LIBDEFLATE_BUILD_SHARED_LIB OFF CACHE BOOL "" FORCE)
+set(LIBDEFLATE_ZLIB_SUPPORT OFF CACHE BOOL "" FORCE)
+set(LIBDEFLATE_GZIP_SUPPORT ON CACHE BOOL "" FORCE)
+set(LIBDEFLATE_BUILD_GZIP OFF CACHE BOOL "" FORCE)
+set(LIBDEFLATE_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(LIBDEFLATE_INSTALL OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(
+        libdeflate
+        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/libdeflate
+)
+FetchContent_MakeAvailable(libdeflate)
+# trellislib links ApricotFields into a shared library too.
+set_target_properties(libdeflate_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_link_libraries(ApricotFields PRIVATE libdeflate::libdeflate_static)
+
+# Headless tests - no GPU, no window. Run with ctest, or the executable.
+option(APRICOTFIELDS_BUILD_TESTS "Build ApricotFields' headless tests" ON)
+if (APRICOTFIELDS_BUILD_TESTS)
+    enable_testing()
+    add_executable(aparchive_tests tests/aparchive_tests.cpp)
+    target_link_libraries(aparchive_tests PRIVATE ApricotFields)
+    add_test(NAME aparchive_tests COMMAND aparchive_tests)
+    add_executable(apaudio_tests tests/apaudio_tests.c)
+    target_link_libraries(apaudio_tests PRIVATE ApricotFields)
+    add_test(NAME apaudio_tests COMMAND apaudio_tests)
+    add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
+    target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
+    add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)
+endif ()
