@@ -18,6 +18,7 @@ add_library(ApricotFields STATIC
         src/archive/aparchive_internal.hpp
         src/archive/aparchive.cpp
         src/audio/apaudio.cpp
+        src/audio/apaudiocues.cpp
         src/math/apmathbvh.cpp
         #src/sync/apsync_internal.hpp
         #src/sync/apsyncnet.cpp
@@ -31,6 +32,7 @@ add_library(ApricotFields STATIC
         include/render/aprendswapchain.h
         include/archive/aparchive.h
         include/audio/apaudio.h
+        include/audio/apaudiocues.h
         include/math/apmathbvh.h
         #include/sync/apsyncnet.h
         )
@@ -124,6 +126,16 @@ FetchContent_MakeAvailable(libdeflate)
 # trellislib links ApricotFields into a shared library too.
 set_target_properties(libdeflate_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ApricotFields PRIVATE libdeflate::libdeflate_static)
+
+# glaze - JSON, for ApAudio's sound bank manifests (src/audio/apaudiocues.cpp).
+# Header only, vendored under eqdev/.deps/glaze like libdeflate. Private: no
+# glaze type crosses ApricotFields' C API.
+FetchContent_Declare(
+        glaze
+        SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/glaze
+)
+FetchContent_MakeAvailable(glaze)
+target_link_libraries(ApricotFields PRIVATE glaze::glaze)
 
 # Headless tests - no GPU, no window. Run with ctest, or the executable.
 option(APRICOTFIELDS_BUILD_TESTS "Build ApricotFields' headless tests" ON)

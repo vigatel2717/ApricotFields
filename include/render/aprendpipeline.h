@@ -54,6 +54,13 @@ typedef struct aprend_graphics_pipeline_desc {
 	SPUDGPU_COMPARE_OP _depth_compare_op;
 	bool _wireframe;
 	float _line_width;
+	/// How this pipeline's output combines with what the color target
+	/// already holds. Zeroed (blend_enable false) writes it as is. The
+	/// aprend_blend_*() presets fill it for the usual cases. A blended
+	/// pipeline normally clears _depth_write and keeps _depth_test, and its
+	/// draws are the caller's to order - back to front, or after everything
+	/// opaque.
+	spudgpu_blend_attachment_desc _blend;
 	aprend_shader vertex_shader;
 	aprend_shader fragment_shader;
 
@@ -70,6 +77,22 @@ typedef struct aprend_graphics_pipeline_desc {
 } aprend_graphics_pipeline_desc;
 
 typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
+
+/* Blend presets for aprend_graphics_pipeline_desc::_blend.
+ *
+ * Premultiplied is the convention to prefer: the fragment shader outputs
+ * color already multiplied by its alpha, which composites correctly over
+ * anything and filters without dark fringes. Use aprend_blend_alpha() for
+ * shaders that output straight (unmultiplied) color; it leaves the target's
+ * alpha as coverage, so the target can itself be composited afterwards. */
+
+/* out = src + dst * (1 - src.a), color and alpha alike. */
+spudgpu_blend_attachment_desc aprend_blend_premultiplied(void);
+/* out.rgb = src.rgb * src.a + dst.rgb * (1 - src.a);
+ * out.a = src.a + dst.a * (1 - src.a). */
+spudgpu_blend_attachment_desc aprend_blend_alpha(void);
+/* out = src + dst, color and alpha alike: light adding to light. */
+spudgpu_blend_attachment_desc aprend_blend_additive(void);
 
 aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instance, aprend_graphics_pipeline_desc desc);
 /* Every aprend_uniform_set created for [p] must be destroyed first. */

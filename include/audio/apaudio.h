@@ -38,7 +38,8 @@ extern "C" {
  *
  * General purpose: it knows nothing about what a sound means or when one
  * should play. That's the caller's (trellislib plays one when a tool places
- * a wall; another app plays them for something else).
+ * a wall; another app plays them for something else). Naming sounds, and
+ * defining them in sound banks, is apaudiocues.h, over this.
  *
  * It never touches a device. Like Aprend with SpudGPU, the caller makes
  * every SpudAudio decision - instance, device, format, period, thread

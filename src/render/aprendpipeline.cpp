@@ -166,6 +166,29 @@ void aprend_shader_destroy(aprend_shader shader) {
 		APREND_DESTRUCT__T(shader, aprend_shader_t);
 }
 
+spudgpu_blend_attachment_desc aprend_blend_premultiplied(void) {
+	spudgpu_blend_attachment_desc blend{};
+	blend.blend_enable           = true;
+	blend.src_color_blend_factor = SPUDGPU_BLEND_FACTOR_ONE;
+	blend.dst_color_blend_factor = SPUDGPU_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	blend.color_blend_op         = SPUDGPU_BLEND_OP_ADD;
+	blend.src_alpha_blend_factor = SPUDGPU_BLEND_FACTOR_ONE;
+	blend.dst_alpha_blend_factor = SPUDGPU_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+	blend.alpha_blend_op         = SPUDGPU_BLEND_OP_ADD;
+	return blend;
+}
+spudgpu_blend_attachment_desc aprend_blend_alpha(void) {
+	spudgpu_blend_attachment_desc blend = aprend_blend_premultiplied();
+	blend.src_color_blend_factor        = SPUDGPU_BLEND_FACTOR_SRC_ALPHA;
+	return blend;
+}
+spudgpu_blend_attachment_desc aprend_blend_additive(void) {
+	spudgpu_blend_attachment_desc blend = aprend_blend_premultiplied();
+	blend.dst_color_blend_factor        = SPUDGPU_BLEND_FACTOR_ONE;
+	blend.dst_alpha_blend_factor        = SPUDGPU_BLEND_FACTOR_ONE;
+	return blend;
+}
+
 aprend_graphics_pipeline aprend_graphics_pipeline_create(
     aprend_instance instance,
     aprend_graphics_pipeline_desc desc) {
@@ -238,6 +261,7 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	pd.depth_test_enable  = desc._depth_test;
 	pd.depth_write_enable = desc._depth_write;
 	pd.depth_compare_op   = desc._depth_compare_op;
+	pd.blend_attachment   = desc._blend;
 
 	pd.color_attachment_format = desc.color_attachment_format;
 	pd.depth_format            = desc.depth_format;

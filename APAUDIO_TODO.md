@@ -14,6 +14,11 @@ one design, sized for Apricot later becoming a game engine). Buses (item 10) are
 remaining missing feature that would force API changes later, so design them in now
 even if they're built later. Everything else can be added without breaking callers.
 
+Cues and sound banks - names over the mixer, defined by a manifest and its WAVs - are
+`include/audio/apaudiocues.h` (`src/audio/apaudiocues.cpp`), moved down from trellislib
+so any application on Apricot has them. It has no tests of its own yet: trellislib's
+audio tests drive it.
+
 ## Wrong things: design bugs in the draft
 
 ### 1. A lost stop can leave a looping sound playing forever - fixed
