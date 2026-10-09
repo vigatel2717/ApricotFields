@@ -1,0 +1,29 @@
+PROJECT_NAME           = "ApricotFields"
+PROJECT_BRIEF          = "General-purpose engine layer: Aprend, ApricotMath, ApAudio, ApSync, ApArchive"
+INPUT                  = include
+FILE_PATTERNS          = *.h
+RECURSIVE              = YES
+OUTPUT_DIRECTORY       = build-docs
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+
+OPTIMIZE_OUTPUT_FOR_C  = YES
+JAVADOC_AUTOBRIEF      = YES
+EXTRACT_ALL            = YES
+QUIET                  = YES
+
+# Paths in the output are relative to include/, the way the headers are
+# included ("render/aprendcontext.h").
+FULL_PATH_NAMES        = YES
+STRIP_FROM_PATH        = include
+STRIP_FROM_INC_PATH    = include
+
+# _DEBUG is the only macro the public headers branch on; with it set, the
+# debug_name fields are documented.
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+PREDEFINED             = _DEBUG=1
+
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = YES

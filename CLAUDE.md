@@ -200,6 +200,51 @@ block near the top. A new header gets the same block.
 - `aprendbuffers.h` carries its author's note that it is due a rewrite. Extend it
   only as far as the task needs.
 
+## Reference: Hazel
+
+Hazel (2025 renderer; Yan Chernikov / Studio Cherno) is a major reference point
+for building this repo, and the engine this repo's competency is compared to:
+what Hazel can do is the bar for what ApricotFields should be able to do. It is a
+C++ engine whose reference copy is at `../.refs/HazelRenderer2025/Hazel/Hazel`
+(source under `src/Hazel/`), read-only and not part of this repo; see
+`../CLAUDE.md`, "External references".
+
+**It is a relative reference: Hazel answers "how has this been solved", this file
+answers "how is it written here".** Read Hazel for the technique, then write it
+under this repo's rules. Where the two disagree, this file wins, every time.
+"Hazel does it this way" is never a reason to break a rule here, and nothing is
+copied across in Hazel's shape to be converted later.
+
+Where it maps: `Hazel/Renderer` onto Aprend most directly (pipelines and their
+specifications, render and compute passes, framebuffers, command buffers, uniform
+and storage buffer sets, shaders, materials, the scene renderer).
+
+**SpudGPU, not NVRHI.** Hazel renders through NVRHI; this repo renders through
+SpudGPU's C API and nothing else. Read Hazel's `nvrhi::` calls and its
+`Hazel/Platform` code for what they achieve, then do it with what SpudGPU
+exposes. NVRHI is never added as a dependency, and a capability NVRHI has that
+SpudGPU lacks is not a reason to change SpudGPU to resemble it: the comparison
+with Hazel is made at this layer only.
+
+What a Hazel idiom becomes here:
+
+| In Hazel | Here |
+|---|---|
+| `class Pipeline : public RefCounted`, held as `Ref<Pipeline>` | An opaque handle, `typedef struct <name>_t *<name>;`, with a create and a destroy call and one owner. No reference count crosses the API |
+| `static Ref<X> Create(const XSpecification &)` | `<prefix>_x_create(...)` taking a desc pointer; how the handle comes back follows the generation of code you're in |
+| `XSpecification` holding `std::string`, `Ref<>` members and default member values | A plain C desc: `<stdint.h>` types, handles, `const char *`. `struct_size` first in the newer modules, and no defaults |
+| `static` state and getters on `Renderer` | State lives on the instance handle the caller passes in. No globals |
+| `Renderer::Submit` lambdas and `RT_` functions | No closure crosses the API. What is safe from which thread is written in the header |
+| `HZ_CORE_ASSERT(false, ...)` on a bad input | Argument checks line by line, each returning its own result |
+| `Ref<X>::Create`, `new` | `malloc` and in-place construction, or `calloc`, per "Code conventions" |
+| `namespace Hazel`, `PascalCase` methods, `m_` members | The module prefix; lower-case handles and functions, upper-case value structs and enums |
+| `glm::` and `std::` types in a header | `Apri*` structs and C types; no C++ type in `include/` |
+| A renderer that knows its scene, assets and editor | No application-domain concept. The caller hands over what to draw |
+
+The sections that hold these rules are "Writing a new module...", "Code
+conventions" and "Public headers" above. A Hazel idiom not in the table is
+handled the same way: find the rule it meets and follow the rule.
+
 ## Tests
 
 Headless, no GPU, no window: `tests/ap<module>_tests.*`, one executable per module,
