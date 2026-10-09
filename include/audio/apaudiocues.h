@@ -1,7 +1,6 @@
 /*
  * Built in src/audio/apaudiocues.cpp. apricotfields.h doesn't include it
- * yet. Its first caller is trellislib's include/trellisaudio.h (see
- * trellislib/docs/audio.md).
+ * yet.
  */
 
 #ifndef APAUDIOCUES_H

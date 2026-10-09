@@ -917,7 +917,6 @@ extern "C"
         desc.struct_size = sizeof(desc);
         desc.source = *source;
         desc.codecs = archive.codecs;
-        desc.strict = APARCHIVE_STRICT_NONE;
         desc.max_entry_count = BANK_MAX_ENTRIES;
         desc.max_central_directory_size = BANK_MAX_CENTRAL_DIRECTORY;
         desc.max_entry_uncompressed_size = BANK_MAX_ENTRY_SIZE;
@@ -925,7 +924,6 @@ extern "C"
         // The size limits bound what a bank costs; silence in a WAV compresses
         // as far as DEFLATE goes, so a ratio limit would only refuse real banks.
         desc.max_compression_ratio = UINT32_MAX;
-        desc.build_name_index = true;
         APARCHIVE_ERROR opening{};
         APRESULT opened = aparchive_reader_open(&desc, &archive.reader, &opening);
         if (opened == APRESULT_OUT_OF_MEMORY)

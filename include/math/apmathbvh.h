@@ -1,8 +1,6 @@
 /*
  * Built in src/math/apmathbvh.cpp, with headless tests in
- * tests/apmathbvh_tests.c. apricotfields.h doesn't include it yet. Its
- * first caller is to be trellislib's picking (the "Picking" section of
- * trellislib/trellisbim_draft.h).
+ * tests/apmathbvh_tests.c. apricotfields.h doesn't include it yet.
  */
 
 #ifndef APMATHBVH_H

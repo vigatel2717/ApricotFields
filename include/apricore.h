@@ -37,10 +37,18 @@ typedef enum APRESULT {
 	APRESULT_APARCHIVE_NOT_AN_ARCHIVE = 1001,
 	/* A ZIP archive with a broken structure, or one that fails a check:
 	 * overlapping entries, a local header that disagrees with the central
-	 * directory, duplicate or unsafe names, a strict-mode violation. */
+	 * directory, duplicate or unsafe names. */
 	APRESULT_APARCHIVE_MALFORMED = 1002,
 	/* An entry compressed with a method that isn't in the codec table. */
 	APRESULT_APARCHIVE_UNKNOWN_METHOD = 1003,
+
+	/* ApSync (sync/apsyncnet.h) */
+
+	/* Another listener already has one of the addresses and the port. */
+	APRESULT_APSYNC_ADDRESS_IN_USE = 2001,
+	/* A joined session that has no snapshot yet, or whose connection to
+	 * the host has ended. */
+	APRESULT_APSYNC_NOT_CONNECTED = 2002,
 } APRESULT;
 
 /*

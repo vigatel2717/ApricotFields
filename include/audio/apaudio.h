@@ -1,8 +1,6 @@
 /*
  * Built in src/audio/apaudio.cpp, with headless tests in
- * tests/apaudio_tests.c. apricotfields.h doesn't include it yet. Its first
- * caller is trellislib's include/trellisaudio.h (see
- * trellislib/docs/audio.md).
+ * tests/apaudio_tests.c. apricotfields.h doesn't include it yet.
  */
 
 #ifndef APAUDIO_H
@@ -37,8 +35,7 @@ extern "C" {
  * without overwriting each other.
  *
  * General purpose: it knows nothing about what a sound means or when one
- * should play. That's the caller's (trellislib plays one when a tool places
- * a wall; another app plays them for something else). Naming sounds, and
+ * should play. That's the caller's. Naming sounds, and
  * defining them in sound banks, is apaudiocues.h, over this.
  *
  * It never touches a device. Like Aprend with SpudGPU, the caller makes
@@ -579,7 +576,7 @@ void apaudio_sound_destroy(apaudio_mixer mixer, APAUDIO_SOUND sound);
 typedef uint64_t APAUDIO_VOICE;
 
 /* Where a sound comes from, relative to the listener facing the screen, in
- * radians - the same convention as trellislib's TRELLIS_CAMERA_BEARING:
+ * radians:
  *   azimuth    0 ahead, positive to the right, +-pi behind
  *   elevation  positive up, in [-pi/2, pi/2]
  * Rendered for the mixer's layout by amplitude panning between the

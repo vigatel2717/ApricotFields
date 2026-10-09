@@ -5,8 +5,7 @@ audio framework (FMOD, Wwise, miniaudio, XAudio2, AVAudioEngine). ApAudio is in 
 build (`CMakeLists.txt`, with headless tests in `tests/apaudio_tests.c`), and
 `src/audio/apaudio.cpp` implements the whole header: the "For the implementation"
 notes below describe what it does, except where it says otherwise at the top of
-that file. `apricotfields.h` doesn't include it yet. Its first caller is trellislib's `include/trellisaudio.h` (see
-`trellislib/docs/audio.md`), which still plays through its silent output.
+that file. `apricotfields.h` doesn't include it yet.
 
 Items 1-4, the design bugs that were cheap to fix before implementing and
 expensive after, are fixed in the header, and so are items 5, 6 and 11 (6 and 11 as
@@ -15,9 +14,8 @@ remaining missing feature that would force API changes later, so design them in 
 even if they're built later. Everything else can be added without breaking callers.
 
 Cues and sound banks - names over the mixer, defined by a manifest and its WAVs - are
-`include/audio/apaudiocues.h` (`src/audio/apaudiocues.cpp`), moved down from trellislib
-so any application on Apricot has them. It has no tests of its own yet: trellislib's
-audio tests drive it.
+`include/audio/apaudiocues.h` (`src/audio/apaudiocues.cpp`), general purpose so any
+application has them. It has no tests of its own yet.
 
 ## Wrong things: design bugs in the draft
 
@@ -57,9 +55,6 @@ used freed memory.
   moves the bug to the caller. Reference counting doesn't close the race by itself:
   a thread releasing the last reference while another starts a play still frees
   memory under it.
-- **Also fixed in trellislib's `include/trellisaudio.h`:** `trellis_sound` is a
-  `{bits}` handle like the model's, and `trellis_sound_play` returns
-  `TRELLIS_ERROR_STALE_HANDLE` for a destroyed sound.
 
 ### 3. Resampling at load time - fixed
 
@@ -80,8 +75,6 @@ voice as it plays. Converting at load:
 - **Device change:** new `apaudio_mixer_set_format()` changes the mixer's output
   format and `max_frames` between the old stream stopping and the new one starting.
   Sounds and handles are kept, and playing voices carry on from where they were.
-  trellislib's `include/trellisaudio.h` now says it moves the stream itself, keeping
-  every sound.
 - **For the implementation:** keep each voice's position as a fixed-point
   fraction of source frames (e.g. 32.32), so long loops don't drift. Sinc
   needs a few frames of history per voice, sized from `max_voices` at creation.
@@ -128,9 +121,6 @@ a 2-second sound, its direction goes stale.
   panning and avoids a lock or a sequence counter. The audio thread swaps each
   changed word out once per render and ramps from the voice's current smoothed
   value.
-- **Not done in trellislib:** `trellis_sound_play` doesn't return a voice yet, so
-  hosts can't stop or change a playing sound. That's needed for a sound to follow
-  the camera, and is the trellislib follow-up.
 
 ### 6. Stolen voices are cut off instantly - fixed, with item 11
 
@@ -159,9 +149,6 @@ was also a weak policy.
   - **`apaudio_mixer_update()`** on the control thread, once a frame, does the
     ranking. A new play doesn't wait for it: the render's fast path starts it in a
     free slot, or in place of the lowest-ranked real voice it outranks.
-- **trellislib** (`include/trellisaudio.h`, `docs/audio.md`) uses a fixed subset:
-  every sound `KILL`, a priority on plays, and `max_instances` / `retrigger_ms` per
-  sound, which it turns into one group per sound with `STOP_OLDEST`.
 - **For the implementation:** start simple. Rank by sorting a few dozen voices;
   build `KILL` and `CONTINUE`, and `REJECT_NEW`, `STOP_OLDEST` and
   `STOP_QUIETEST`, first. The real-voice set the update decides is posted to the
@@ -178,9 +165,8 @@ clicks can easily sum past 1.0.
 
 ### 8. Folding rear sounds to the front is misleading on stereo
 
-On a stereo layout a sound behind the listener is mirrored to the front, so a wall
-placed behind the camera sounds like one in front. For the accessibility use
-(Equate), that's actively wrong.
+On a stereo layout a sound behind the listener is mirrored to the front, so it
+sounds like one in front. For an accessibility use, that's actively wrong.
 
 - **Fix:** a "behind" cue, such as a gentle low-pass filter (needs item 12), or at
   least a flag saying the direction was folded.
@@ -217,8 +203,7 @@ minimum: it gives occlusion and "behind" cues (item 8).
 
 No voice-finished or loop-point notifications (delivered off the audio thread), and
 no way to ask how far a voice has played. `apaudio_voice_is_live()` is the polled
-part of this: whether a voice has ended, which trellislib's playings need
-(`trellis_audio_is_playing()`). Why it ended, and events, are still missing.
+part of this: whether a voice has ended. Why it ended, and events, are still missing.
 
 ### 14. Monitoring
 
@@ -233,7 +218,7 @@ Needs streamed voices and FLAC, Opus and Vorbis decoders.
 
 - **World-space sources and a listener:** frameworks place sources and a listener in
   3D, with distance attenuation curves, directional cones and doppler. Angles are
-  enough for Trellis's placement sound, but a moving camera needs updates (item 5).
+  enough for a sound placed once, but a moving listener needs updates (item 5).
   Items 6 and 11 made this the next game-engine step: audibility should include
   distance attenuation, `apaudio_mixer_update()` is where listener and emitter maths
   goes, and it enables a `STOP_FARTHEST` resolution and distance-based priority
@@ -243,13 +228,13 @@ Needs streamed voices and FLAC, Opus and Vorbis decoders.
   users listen on headphones or laptop speakers.
 - **Ambisonics,** for many simultaneous sources.
 
-## Platform behavior that matters for Trellis
+## Platform behavior a caller has to handle
 
 Not ApAudio's to decide, but nothing in the design prompts its callers to handle it.
 
 - **System UI sound conventions.** On macOS, UI sounds should normally go to the
   system sounds (alert) device (`SPUDAUDIO_DEFAULT_ROLE_SYSTEM_SOUNDS`) and respect
-  "Play user interface sound effects". That's trellislib's or the host's choice.
+  "Play user interface sound effects". That's the caller's choice.
 - **iOS audio session.** On the Apple roadmap, iOS needs an `AVAudioSession`
   category, or sounds are silenced by the ringer switch and fight with other apps'
   audio. Nothing in SpudAudio or ApAudio models that yet.

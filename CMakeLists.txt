@@ -20,8 +20,8 @@ add_library(ApricotFields STATIC
         src/audio/apaudio.cpp
         src/audio/apaudiocues.cpp
         src/math/apmathbvh.cpp
-        #src/sync/apsync_internal.hpp
-        #src/sync/apsyncnet.cpp
+        src/sync/apsync_internal.hpp
+        src/sync/apsyncnet.cpp
         include/apricore.h
         include/render/aprendcontext.h
         include/render/aprendbuffers.h
@@ -34,7 +34,7 @@ add_library(ApricotFields STATIC
         include/audio/apaudio.h
         include/audio/apaudiocues.h
         include/math/apmathbvh.h
-        #include/sync/apsyncnet.h
+        include/sync/apsyncnet.h
         )
 
 target_include_directories(ApricotFields PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -46,6 +46,10 @@ if (NOT TARGET spudlib)
 endif ()
 # Link SpudLib library
 target_link_libraries(ApricotFields PUBLIC spudlib)
+
+# ApSync runs each session on a thread of its own (src/sync/apsyncnet.cpp).
+find_package(Threads REQUIRED)
+target_link_libraries(ApricotFields PRIVATE Threads::Threads)
 
 # Vulkan stuff -- only needed on Windows/Linux, where SpudGPU's Vulkan
 # backend is selected and shaders are compiled to SPIR-V via glslc. ApricotFields
@@ -70,7 +74,7 @@ if (WIN32 OR (UNIX AND NOT APPLE))
     endif ()
 
     # Shaders are compiled to the parent project's runtime output directory
-    # (set by the host application, e.g. Erethal).  Fall back to the local
+    # (set by whatever project adds this directory).  Fall back to the local
     # build dir when ApricotFields is built standalone.
     if (CMAKE_RUNTIME_OUTPUT_DIRECTORY)
         set(APRICOT_SHADER_OUTDIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/shaders")
@@ -123,7 +127,7 @@ FetchContent_Declare(
         SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../.deps/libdeflate
 )
 FetchContent_MakeAvailable(libdeflate)
-# trellislib links ApricotFields into a shared library too.
+# ApricotFields may be linked into a shared library too.
 set_target_properties(libdeflate_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_link_libraries(ApricotFields PRIVATE libdeflate::libdeflate_static)
 
@@ -147,6 +151,11 @@ if (APRICOTFIELDS_BUILD_TESTS)
     add_executable(apaudio_tests tests/apaudio_tests.c)
     target_link_libraries(apaudio_tests PRIVATE ApricotFields)
     add_test(NAME apaudio_tests COMMAND apaudio_tests)
+    # Two sessions talking over the loopback interface: no GPU, no window,
+    # but it does open a listening socket on 127.0.0.1.
+    add_executable(apsync_tests tests/apsync_tests.c)
+    target_link_libraries(apsync_tests PRIVATE ApricotFields)
+    add_test(NAME apsync_tests COMMAND apsync_tests)
     add_executable(apmathbvh_tests tests/apmathbvh_tests.c)
     target_link_libraries(apmathbvh_tests PRIVATE ApricotFields)
     add_test(NAME apmathbvh_tests COMMAND apmathbvh_tests)

@@ -54,3 +54,8 @@ _deps/
 # CLion / JetBrains
 .idea/
 cmake-build-*/
+# Claude Code worktrees
+.claude/worktrees/
+
+# macOS Finder metadata
+.DS_Store
