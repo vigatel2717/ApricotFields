@@ -155,11 +155,14 @@ bool aprend_framebuffer_resize(
 }
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
+    spudgpu_command_queue queue,
     float r,
     float g,
     float b,
     float a) {
 	if (!framebuffer)
+		return false;
+	if (!queue)
 		return false;
 	if (framebuffer->color_attachments.empty())
 		return true; // Nothing to clear.
@@ -168,7 +171,7 @@ bool aprend_framebuffer_clear_colors(
 	// aprend_immediate_final_layout), and the tracked layouts are only
 	// written once the one submission covering all of them has succeeded.
 	const SPUDGPU_IMAGE_LAYOUT working = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	bool ok                            = aprend_submit_immediate(framebuffer->instance, [&](spudgpu_command_list cmd) {
+	bool ok                            = aprend_submit_immediate(framebuffer->instance, queue, [&](spudgpu_command_list cmd) {
 		for (aprend_texture_view view : framebuffer->color_attachments) {
 			aprend_texture2d attachment             = view->texture._t2d;
 			const SPUDGPU_IMAGE_LAYOUT final_layout = aprend_immediate_final_layout(attachment->current_layout, working);
@@ -189,11 +192,14 @@ bool aprend_framebuffer_clear_colors(
 }
 bool aprend_framebuffer_clear_depth(
     aprend_framebuffer framebuffer,
+    spudgpu_command_queue queue,
     bool clear_depth,
     bool clear_stencil,
     float depth,
     uint32_t stencil) {
 	if (!framebuffer)
+		return false;
+	if (!queue)
 		return false;
 	if (!framebuffer->has_depth_attachment)
 		return false;
@@ -206,7 +212,7 @@ bool aprend_framebuffer_clear_depth(
 	aprend_texture2d attachment_texture = view->texture._t2d;
 
 	return aprend_immediate_on_texture(
-	    attachment_texture, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	    attachment_texture, queue, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	    [&](spudgpu_command_list cmd) {
 		    spudgpu_cmd_clear_depth_attachment(
 		        cmd, aprend_texture_view_get_spudgpu_image_view(view), clear_depth, clear_stencil, depth, stencil, attachment_texture->desc.width,

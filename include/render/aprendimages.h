@@ -48,8 +48,9 @@ typedef struct aprend_texture2d_desc {
 	APREND_TEXTURE_USAGE_BITS usage;
 
 	/**
-	 * 0 for a full chain, 1 for no mips, N for N levels. Only level 0 is
-	 * ever written: nothing fills the others yet.
+	 * 0 for a full chain, 1 for no mips, N for N levels. Every level starts
+	 * undefined and nothing generates one from another: each level a
+	 * sampler can reach is the caller's to write.
 	 */
 	uint32_t mip_levels;
 	/** 1 for a plain 2D texture, more for an array. 0 is taken as 1. */
@@ -59,13 +60,6 @@ typedef struct aprend_texture2d_desc {
 
 	/** The memory the image is allocated in. */
 	SPUDGPU_MEMORY_FLAGS memory_flags;
-	/** Not read yet. */
-	bool store_locally;
-
-	/** Not read yet: fill the texture with aprend_texture2d_update(). */
-	const void *initial_data;
-	/** Not read yet. */
-	uint32_t initial_data_pitch;
 
 #if _DEBUG
 	/** A name for diagnostics. May be NULL. */
@@ -79,7 +73,9 @@ typedef struct aprend_texture2d_desc {
 typedef struct aprend_texture2d_t *aprend_texture2d;
 
 /**
- * @brief Creates a 2D texture. Its contents are undefined until written.
+ * @brief Creates a 2D texture. Its contents are undefined until written:
+ * there is no initial data in the descriptor, so fill it with
+ * aprend_texture2d_update().
  *
  * @param[in] instance Instance whose device the texture is created on.
  * @param[in] desc     Texture configuration. Only read during the call.
@@ -127,10 +123,13 @@ aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture);
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
 
 /**
- * @brief Writes a region of a 2D texture's mip 0, layer 0.
+ * @brief Writes a region of one mip level of one array layer of a 2D
+ * texture.
  *
- * Runs at once, on the device's graphics queue, and blocks until the GPU has
- * finished. Every submission that uses the texture must have completed first.
+ * Runs at once, on @p queue, and blocks until the copy has run. It is one of
+ * the instance's submissions, so @p queue is the queue the instance's
+ * command lists are submitted on. Every
+ * submission that uses the texture must have completed first.
  *
  * The texture is left in the image layout it was found in, so a command list
  * already compiled against it can still be submitted. The exception is a
@@ -139,7 +138,11 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  * (aprend_command_list_submit() refuses it).
  *
  * @param[in] texture  Texture to write.
- * @param[in] x_offset Left edge of the region, in texels.
+ * @param[in] queue    Queue the copy is submitted on. Never NULL. It must be
+ *                     able to run copies between a buffer and an image.
+ * @param[in] mip_level Mip level, 0 the largest. Below the texture's mip count.
+ * @param[in] array_layer Array layer. Below the texture's layer count.
+ * @param[in] x_offset Left edge of the region, in texels of the level.
  * @param[in] y_offset Top edge of the region, in texels.
  * @param[in] width    Width of the region. Never 0.
  * @param[in] height   Height of the region. Never 0.
@@ -148,11 +151,15 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  *                     format.
  *
  * @return true if the region was written. false if an argument or `*ppData`
- *         is NULL or 0, the region runs outside the texture, or the copy
+ *         is NULL or 0, the level or layer doesn't exist, the region runs
+ *         outside the level, or the copy
  *         couldn't be made or submitted.
  */
 bool aprend_texture2d_update(
 	aprend_texture2d texture,
+	spudgpu_command_queue queue,
+	uint32_t mip_level,
+	uint32_t array_layer,
 	uint32_t x_offset,
 	uint32_t y_offset,
 	uint32_t width,
@@ -160,13 +167,18 @@ bool aprend_texture2d_update(
 	void **ppData);
 
 /**
- * @brief Reads back a region of a 2D texture's mip 0, layer 0.
+ * @brief Reads back a region of one mip level of one array layer of a 2D
+ * texture.
  *
  * Runs and blocks as aprend_texture2d_update(), and leaves the texture's
  * image layout the same way.
  *
  * @param[in]  texture  Texture to read.
- * @param[in]  x_offset Left edge of the region, in texels.
+ * @param[in]  queue    Queue the copy is submitted on. Never NULL. It must be
+ *                      able to run copies between a buffer and an image.
+ * @param[in]  mip_level Mip level, 0 the largest. Below the texture's mip count.
+ * @param[in]  array_layer Array layer. Below the texture's layer count.
+ * @param[in]  x_offset Left edge of the region, in texels of the level.
  * @param[in]  y_offset Top edge of the region, in texels.
  * @param[in]  width    Width of the region. Never 0.
  * @param[in]  height   Height of the region. Never 0.
@@ -175,11 +187,15 @@ bool aprend_texture2d_update(
  *                      packed, in the texture's format.
  *
  * @return true if the region was read. false if an argument or `*ppData` is
- *         NULL or 0, the region runs outside the texture, or the copy
+ *         NULL or 0, the level or layer doesn't exist, the region runs
+ *         outside the level, or the copy
  *         couldn't be made or submitted.
  */
 bool aprend_texture2d_get_data(
 	aprend_texture2d texture,
+	spudgpu_command_queue queue,
+	uint32_t mip_level,
+	uint32_t array_layer,
 	uint32_t x_offset,
 	uint32_t y_offset,
 	uint32_t width,
@@ -235,22 +251,14 @@ typedef struct aprend_texture3d_desc {
 	APREND_TEXTURE_USAGE_BITS usage;
 
 	/**
-	 * 0 for a full chain, 1 for no mips, N for N levels. Only level 0 is
-	 * ever written: nothing fills the others yet.
+	 * 0 for a full chain, 1 for no mips, N for N levels. Every level starts
+	 * undefined and nothing generates one from another: each level a
+	 * sampler can reach is the caller's to write.
 	 */
 	uint32_t mip_levels;
 
 	/** The memory the image is allocated in. */
 	SPUDGPU_MEMORY_FLAGS memory_flags;
-	/** Not read yet. */
-	bool store_locally;
-
-	/** Not read yet: fill the texture with aprend_texture3d_update(). */
-	const void *initial_data;
-	/** Not read yet. */
-	uint32_t initial_data_row_pitch;
-	/** Not read yet. */
-	uint32_t initial_data_slice_pitch;
 
 #if _DEBUG
 	/** A name for diagnostics. May be NULL. */
@@ -321,13 +329,16 @@ spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d text
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
 
 /**
- * @brief Writes a region of a 3D texture's mip 0.
+ * @brief Writes a region of one mip level of a 3D texture.
  *
  * Runs, blocks and leaves the texture's image layout as
  * aprend_texture2d_update().
  *
  * @param[in] texture  Texture to write.
- * @param[in] x_offset Left edge of the region, in texels.
+ * @param[in] queue    Queue the copy is submitted on. Never NULL. It must be
+ *                     able to run copies between a buffer and an image.
+ * @param[in] mip_level Mip level, 0 the largest. Below the texture's mip count.
+ * @param[in] x_offset Left edge of the region, in texels of the level.
  * @param[in] y_offset Top edge of the region, in texels.
  * @param[in] z_offset First depth slice of the region.
  * @param[in] width    Width of the region. Never 0.
@@ -338,11 +349,14 @@ spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
  *                     the texture's format.
  *
  * @return true if the region was written. false if an argument or `*ppData`
- *         is NULL or 0, the region runs outside the texture, or the copy
+ *         is NULL or 0, the level or layer doesn't exist, the region runs
+ *         outside the level, or the copy
  *         couldn't be made or submitted.
  */
 bool aprend_texture3d_update(
 	aprend_texture3d texture,
+	spudgpu_command_queue queue,
+	uint32_t mip_level,
 	uint32_t x_offset,
 	uint32_t y_offset,
 	uint32_t z_offset,
@@ -352,13 +366,16 @@ bool aprend_texture3d_update(
 	void **ppData);
 
 /**
- * @brief Reads back a region of a 3D texture's mip 0.
+ * @brief Reads back a region of one mip level of a 3D texture.
  *
  * Runs, blocks and leaves the texture's image layout as
  * aprend_texture2d_update().
  *
  * @param[in]  texture  Texture to read.
- * @param[in]  x_offset Left edge of the region, in texels.
+ * @param[in]  queue    Queue the copy is submitted on. Never NULL. It must be
+ *                      able to run copies between a buffer and an image.
+ * @param[in]  mip_level Mip level, 0 the largest. Below the texture's mip count.
+ * @param[in]  x_offset Left edge of the region, in texels of the level.
  * @param[in]  y_offset Top edge of the region, in texels.
  * @param[in]  z_offset First depth slice of the region.
  * @param[in]  width    Width of the region. Never 0.
@@ -372,6 +389,8 @@ bool aprend_texture3d_update(
  */
 bool aprend_texture3d_get_data(
 	aprend_texture3d texture,
+	spudgpu_command_queue queue,
+	uint32_t mip_level,
 	uint32_t x_offset,
 	uint32_t y_offset,
 	uint32_t z_offset,
@@ -424,22 +443,28 @@ enum {
 /**
  * @brief What a texture view is used as.
  *
- * It doesn't change the SpudGPU view that is made. An aprend_binding_set
- * checks it against the slot the view is put in.
+ * View creation requires the texture to have been created with the usage bit
+ * the type needs, named on each value. An aprend_binding_set checks the type
+ * against the slot the view is put in.
  */
 typedef uint32_t APREND_TEXTURE_VIEW_TYPE;
 enum {
 	/** Not a view type: view creation refuses it. */
 	APREND_TEXTURE_VIEW_TYPE_NONE             = 0,
-	/** Read and written by a shader through a storage image slot. */
+	/**
+	 * Read and written by a shader through a storage image slot. Needs
+	 * APREND_TEXTURE_USAGE_BIT_STORAGE.
+	 */
 	APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS = 1,
-	/** A color target of a pass. */
+	/** A color target of a pass. Needs APREND_TEXTURE_USAGE_BIT_RENDER_TARGET. */
 	APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET     = 2,
-	/** The depth target of a pass. */
+	/** The depth target of a pass. Needs APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL. */
 	APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL    = 3,
 	/**
 	 * Read by a shader through a sampled image or combined image sampler
-	 * slot.
+	 * slot. Needs APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE. Of a texture
+	 * whose format has both depth and stencil, the view is of the depth
+	 * alone: a sampled view reads one or the other, never both.
 	 */
 	APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE  = 4
 };
@@ -458,7 +483,9 @@ typedef struct aprend_texture_view_t *aprend_texture_view;
  *                    APREND_TEXTURE_VIEW_TYPE_NONE.
  *
  * @return The view, or NULL if @p texture is NULL, @p type is
- *         APREND_TEXTURE_VIEW_TYPE_NONE, or the view can't be created.
+ *         APREND_TEXTURE_VIEW_TYPE_NONE or not an APREND_TEXTURE_VIEW_TYPE,
+ *         @p texture was created without the usage bit @p type needs, or the
+ *         view can't be created.
  *
  * @see aprend_destroy_texture_view()
  */
@@ -474,7 +501,9 @@ aprend_texture_view aprend_texture_view_create_2d(
  *                    APREND_TEXTURE_VIEW_TYPE_NONE.
  *
  * @return The view, or NULL if @p texture is NULL, @p type is
- *         APREND_TEXTURE_VIEW_TYPE_NONE, or the view can't be created.
+ *         APREND_TEXTURE_VIEW_TYPE_NONE or not an APREND_TEXTURE_VIEW_TYPE,
+ *         @p texture was created without the usage bit @p type needs, or the
+ *         view can't be created.
  *
  * @see aprend_destroy_texture_view()
  */

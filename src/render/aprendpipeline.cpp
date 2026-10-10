@@ -30,7 +30,12 @@ static SPUDGPU_FORMAT aprend_buffer_element_type_to_format(APREND_BUFFER_ELEMENT
 }
 
 aprend_shader_t::~aprend_shader_t() { spudgpu_destroy_shader_module(this->shader_module); }
-aprend_graphics_pipeline_t::~aprend_graphics_pipeline_t() { spudgpu_destroy_shader_pipeline(this->pipeline); }
+aprend_graphics_pipeline_t::~aprend_graphics_pipeline_t() {
+	// A pipeline that failed to create has nothing to destroy.
+	if (this->pipeline)
+		spudgpu_destroy_shader_pipeline(this->pipeline);
+	free(this->entry_points);
+}
 aprend_binding_layout_t::~aprend_binding_layout_t() {
 	// Pools, then the layout their sets were allocated against.
 	for (uint32_t i = 0; i < this->pool_count; ++i)
@@ -41,10 +46,10 @@ aprend_binding_layout_t::~aprend_binding_layout_t() {
 }
 aprend_binding_set_t::~aprend_binding_set_t() {
 	free(this->image_uses);
-	// A set that failed to create has nothing to give back.
-	if (!this->set)
-		return;
-	this->layout->free_sets[this->layout->free_set_count++] = this->set;
+	free(this->staged_stores);
+	// A set that failed to create gives back what it got as far as acquiring.
+	for (uint32_t frame = 0; frame < this->frame_set_count; ++frame)
+		this->layout->free_sets[this->layout->free_set_count++] = this->sets[frame];
 }
 
 static_assert(APREND_DESCRIPTOR_TYPE_COUNT <= SPUDGPU_MAX_DESCRIPTOR_POOL_SIZES);
@@ -140,15 +145,25 @@ static bool aprend_binding_range_valid(uint64_t offset, uint64_t range, uint64_t
 
 // Whether entry [index] of a set holds what its _type reads. The type has
 // already been checked against the layout's.
-static bool aprend_binding_set_entry_resource_valid(const aprend_binding_set_entry &entry, uint32_t index) {
+static bool aprend_binding_set_entry_resource_valid(aprend_instance instance, const aprend_binding_set_entry &entry, uint32_t index) {
 	switch (entry._type) {
 	case SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER: {
 		const auto &r = entry._resource._uniform;
-		if (!r._buffer) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no uniform buffer\n", index, entry._binding);
+		if (!r._buffer && !r._set) {
+			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no uniform buffer and no uniform buffer set\n", index, entry._binding);
 			return false;
 		}
-		if (!aprend_binding_range_valid(r._offset, r._range, r._buffer->total_size)) {
+		if (r._buffer && r._set) {
+			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has both a uniform buffer and a uniform buffer set\n", index, entry._binding);
+			return false;
+		}
+		if (r._set && r._set->instance != instance) {
+			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has a uniform buffer set of another instance\n", index, entry._binding);
+			return false;
+		}
+		// Every copy of a set is the same size.
+		const aprend_uniform_buffer buffer = r._set ? r._set->buffers[0] : r._buffer;
+		if (!aprend_binding_range_valid(r._offset, r._range, buffer->total_size)) {
 			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has an _offset and _range outside its buffer\n", index, entry._binding);
 			return false;
 		}
@@ -156,11 +171,20 @@ static bool aprend_binding_set_entry_resource_valid(const aprend_binding_set_ent
 	}
 	case SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER: {
 		const auto &r = entry._resource._storage;
-		if (!r._buffer) {
-			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no storage buffer\n", index, entry._binding);
+		if (!r._buffer && !r._set) {
+			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has no storage buffer and no storage buffer set\n", index, entry._binding);
 			return false;
 		}
-		if (!aprend_binding_range_valid(r._offset, r._range, r._buffer->size)) {
+		if (r._buffer && r._set) {
+			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has both a storage buffer and a storage buffer set\n", index, entry._binding);
+			return false;
+		}
+		if (r._set && r._set->instance != instance) {
+			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has a storage buffer set of another instance\n", index, entry._binding);
+			return false;
+		}
+		const aprend_storage_buffer buffer = r._set ? r._set->buffers[0] : r._buffer;
+		if (!aprend_binding_range_valid(r._offset, r._range, buffer->size)) {
 			printf("apricot: aprend_binding_set_create: entry %u (binding %u) has an _offset and _range outside its buffer\n", index, entry._binding);
 			return false;
 		}
@@ -346,8 +370,75 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 		return nullptr;
 	if (!desc.fragment_shader)
 		return nullptr;
-	if (desc._vertex_layout.count > SPUDGPU_MAX_VERTEX_ATTRIBUTES)
+	if (!desc._vertex_entry_point) {
+		printf("apricot: aprend_graphics_pipeline_create: _vertex_entry_point is NULL\n");
 		return nullptr;
+	}
+	if (!desc._vertex_entry_point[0]) {
+		printf("apricot: aprend_graphics_pipeline_create: _vertex_entry_point is an empty string\n");
+		return nullptr;
+	}
+	if (!desc._fragment_entry_point) {
+		printf("apricot: aprend_graphics_pipeline_create: _fragment_entry_point is NULL\n");
+		return nullptr;
+	}
+	if (!desc._fragment_entry_point[0]) {
+		printf("apricot: aprend_graphics_pipeline_create: _fragment_entry_point is an empty string\n");
+		return nullptr;
+	}
+	if (desc._vertex_binding_count > APREND_MAX_VERTEX_BINDINGS) {
+		printf("apricot: aprend_graphics_pipeline_create: _vertex_binding_count %u is above APREND_MAX_VERTEX_BINDINGS\n", desc._vertex_binding_count);
+		return nullptr;
+	}
+	uint32_t vertex_attribute_count = 0;
+	for (uint32_t i = 0; i < desc._vertex_binding_count; ++i) {
+		const aprend_buffer_layout &layout = desc._vertex_bindings[i]._layout;
+		if (layout.count == 0) {
+			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has no elements\n", i);
+			return nullptr;
+		}
+		if (!layout.elements) {
+			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has a NULL elements array\n", i);
+			return nullptr;
+		}
+		if (aprend_buffer_layout_get_total_size(&layout) == 0) {
+			printf("apricot: aprend_graphics_pipeline_create: _vertex_bindings[%u] has a stride of 0\n", i);
+			return nullptr;
+		}
+		if (layout.count > SPUDGPU_MAX_VERTEX_ATTRIBUTES - vertex_attribute_count) {
+			printf("apricot: aprend_graphics_pipeline_create: the vertex bindings hold more than SPUDGPU_MAX_VERTEX_ATTRIBUTES elements\n");
+			return nullptr;
+		}
+		vertex_attribute_count += layout.count;
+	}
+	if (desc._push_constant_range_count > APREND_MAX_PUSH_CONSTANT_RANGES) {
+		printf("apricot: aprend_graphics_pipeline_create: _push_constant_range_count %u is above APREND_MAX_PUSH_CONSTANT_RANGES\n",
+		       desc._push_constant_range_count);
+		return nullptr;
+	}
+	for (uint32_t i = 0; i < desc._push_constant_range_count; ++i) {
+		const spudgpu_push_constant_range_desc &range = desc._push_constant_ranges[i];
+		if (range.stage_flags == SPUDGPU_SHADER_STAGE_NONE) {
+			printf("apricot: aprend_graphics_pipeline_create: _push_constant_ranges[%u] has no stages\n", i);
+			return nullptr;
+		}
+		if (range.size == 0) {
+			printf("apricot: aprend_graphics_pipeline_create: _push_constant_ranges[%u] has a size of 0\n", i);
+			return nullptr;
+		}
+		if (range.offset % 4 != 0) {
+			printf("apricot: aprend_graphics_pipeline_create: _push_constant_ranges[%u] has an offset that is not a multiple of 4\n", i);
+			return nullptr;
+		}
+		if (range.size % 4 != 0) {
+			printf("apricot: aprend_graphics_pipeline_create: _push_constant_ranges[%u] has a size that is not a multiple of 4\n", i);
+			return nullptr;
+		}
+		if (range.size > UINT32_MAX - range.offset) {
+			printf("apricot: aprend_graphics_pipeline_create: _push_constant_ranges[%u] runs past what 32 bits can address\n", i);
+			return nullptr;
+		}
+	}
 	if (desc._cull_mode > SPUDGPU_CULL_MODE_BACK) {
 		printf("apricot: aprend_graphics_pipeline_create: _cull_mode %u is not a SPUDGPU_CULL_MODE\n", (unsigned)desc._cull_mode);
 		return nullptr;
@@ -380,25 +471,54 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	result->desc     = desc;
 	result->instance = instance;
 
+	// The names are copied, so the desc aprend_graphics_pipeline_get_desc
+	// hands back never points at a string the caller has released.
+	const size_t vertex_entry_size   = strlen(desc._vertex_entry_point) + 1;
+	const size_t fragment_entry_size = strlen(desc._fragment_entry_point) + 1;
+	result->entry_points             = (char *)malloc(vertex_entry_size + fragment_entry_size);
+	if (!result->entry_points) {
+		APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
+		return nullptr;
+	}
+	memcpy(result->entry_points, desc._vertex_entry_point, vertex_entry_size);
+	memcpy(result->entry_points + vertex_entry_size, desc._fragment_entry_point, fragment_entry_size);
+	result->desc._vertex_entry_point   = result->entry_points;
+	result->desc._fragment_entry_point = result->entry_points + vertex_entry_size;
+
 	spudgpu_shader_pipeline_desc pd{};
 	pd.vertex_module        = desc.vertex_shader->shader_module;
-	pd.vertex_entry_point   = "main";
+	pd.vertex_entry_point   = result->desc._vertex_entry_point;
 	pd.fragment_module      = desc.fragment_shader->shader_module;
-	pd.fragment_entry_point = "main";
+	pd.fragment_entry_point = result->desc._fragment_entry_point;
 
-	pd.vertex_bindings[0].binding      = 0;
-	pd.vertex_bindings[0].stride       = aprend_buffer_layout_get_total_size(&desc._vertex_layout);
-	pd.vertex_bindings[0].per_instance = false;
-	pd.vertex_binding_count            = desc._vertex_layout.count ? 1 : 0;
+	// Locations run on through the bindings in order.
+	for (uint32_t binding = 0; binding < desc._vertex_binding_count; ++binding) {
+		const aprend_vertex_binding_desc &vb = desc._vertex_bindings[binding];
+		result->vertex_strides[binding]      = aprend_buffer_layout_get_total_size(&vb._layout);
 
-	for (uint32_t i = 0; i < desc._vertex_layout.count; ++i) {
-		const aprend_buffer_element &el  = desc._vertex_layout.elements[i];
-		pd.vertex_attributes[i].location = i;
-		pd.vertex_attributes[i].binding  = 0;
-		pd.vertex_attributes[i].format   = aprend_buffer_element_type_to_format(el.type);
-		pd.vertex_attributes[i].offset   = el.offset;
+		pd.vertex_bindings[binding].binding      = binding;
+		pd.vertex_bindings[binding].stride       = result->vertex_strides[binding];
+		pd.vertex_bindings[binding].per_instance = vb._per_instance;
+
+		for (uint32_t i = 0; i < vb._layout.count; ++i) {
+			const aprend_buffer_element &el         = vb._layout.elements[i];
+			spudgpu_vertex_attribute_desc &attribute = pd.vertex_attributes[pd.vertex_attribute_count];
+			attribute.location                       = pd.vertex_attribute_count;
+			attribute.binding                        = binding;
+			attribute.format                         = aprend_buffer_element_type_to_format(el.type);
+			attribute.offset                         = el.offset;
+			++pd.vertex_attribute_count;
+		}
 	}
-	pd.vertex_attribute_count = desc._vertex_layout.count;
+	pd.vertex_binding_count = desc._vertex_binding_count;
+
+	for (uint32_t i = 0; i < desc._push_constant_range_count; ++i) {
+		pd.push_constant_ranges[i] = desc._push_constant_ranges[i];
+		const uint32_t range_end   = desc._push_constant_ranges[i].offset + desc._push_constant_ranges[i].size;
+		if (range_end > result->push_constant_end)
+			result->push_constant_end = range_end;
+	}
+	pd.push_constant_range_count = desc._push_constant_range_count;
 
 	pd.primitive_topology = desc._topology;
 	pd.cull_mode          = desc._cull_mode;
@@ -526,6 +646,7 @@ aprend_binding_set aprend_binding_set_create(
 	// Every entry must name an array element the layout declares, once. The
 	// count matches, so nothing repeated also means nothing left unfilled.
 	uint32_t image_use_count = 0;
+	bool has_buffer_set      = false;
 	for (uint32_t i = 0; i < entry_count; ++i) {
 		const aprend_binding_set_entry &entry = entries[i];
 		const aprend_binding_desc *binding    = aprend_binding_layout_find(layout, entry._binding);
@@ -550,11 +671,18 @@ aprend_binding_set aprend_binding_set_create(
 				return nullptr;
 			}
 		}
-		if (!aprend_binding_set_entry_resource_valid(entry, i))
+		if (!aprend_binding_set_entry_resource_valid(layout->instance, entry, i))
 			return nullptr;
 		if (aprend_descriptor_type_reads_view(entry._type))
 			++image_use_count;
+		if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER && entry._resource._uniform._set)
+			has_buffer_set = true;
+		if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER && entry._resource._storage._set)
+			has_buffer_set = true;
 	}
+	// One descriptor set if nothing in it changes with the frame; one for
+	// each frame in flight if an entry is a buffer set.
+	const uint32_t frame_set_count = has_buffer_set ? layout->instance->desc.frames_in_flight : 1;
 
 	// What the writes point at; only needed until the set is written.
 	struct write_info {
@@ -589,57 +717,87 @@ aprend_binding_set aprend_binding_set_create(
 		}
 	}
 
-	SPUDRESULT sr = aprend_binding_layout_acquire_set(layout, &result->set);
-	if (SPUDFAIL(sr)) {
-		printf("apricot: aprend_binding_set_create failed: %s\n", spudresult_str(sr));
+	// Room for every entry of every frame's set: at most each one is a
+	// staged storage buffer.
+	result->staged_store_capacity = entry_count;
+	result->staged_stores         = (aprend_buffer_store **)calloc((size_t)entry_count * frame_set_count, sizeof(aprend_buffer_store *));
+	if (!result->staged_stores) {
 		APREND_DESTRUCT__T(result, aprend_binding_set_t);
 		free(writes);
 		free(infos);
 		return nullptr;
 	}
 
-	for (uint32_t i = 0; i < entry_count; ++i) {
-		const aprend_binding_set_entry &entry = entries[i];
-		spudgpu_write_descriptor_set &write   = writes[i];
-		write.dst_set                         = result->set;
-		write.dst_binding                     = entry._binding;
-		write.dst_array_element               = entry._array_element;
-		write.descriptor_count                = 1;
-		write.descriptor_type                 = entry._type;
-
-		if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
-			const auto &r           = entry._resource._uniform;
-			infos[i].buffer.buffer  = r._buffer->buffer;
-			infos[i].buffer.offset  = r._buffer->buffer_view_desc.offset_from_parent_buffer + r._offset;
-			infos[i].buffer.range   = r._range ? r._range : r._buffer->total_size - r._offset;
-			write.buffer_info       = &infos[i].buffer;
-			continue;
+	// frame_set_count goes up with each set acquired, so the destructor
+	// gives back exactly those if a later one fails.
+	for (uint32_t frame = 0; frame < frame_set_count; ++frame) {
+		SPUDRESULT sr = aprend_binding_layout_acquire_set(layout, &result->sets[frame]);
+		if (SPUDFAIL(sr)) {
+			printf("apricot: aprend_binding_set_create failed: %s\n", spudresult_str(sr));
+			result->sets[frame] = nullptr;
+			APREND_DESTRUCT__T(result, aprend_binding_set_t);
+			free(writes);
+			free(infos);
+			return nullptr;
 		}
-		if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
-			const auto &r           = entry._resource._storage;
-			infos[i].buffer.buffer  = r._buffer->buffer;
-			infos[i].buffer.offset  = r._buffer->buffer_view_desc.offset_from_parent_buffer + r._offset;
-			infos[i].buffer.range   = r._range ? r._range : r._buffer->size - r._offset;
-			write.buffer_info       = &infos[i].buffer;
-			continue;
-		}
-
-		const auto &r = entry._resource._image;
-		if (aprend_descriptor_type_reads_view(entry._type)) {
-			// A storage image is read and written in GENERAL; anything
-			// sampled is read in SHADER_READ_ONLY.
-			const SPUDGPU_IMAGE_LAYOUT image_layout =
-			    entry._type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE ? SPUDGPU_IMAGE_LAYOUT_GENERAL : SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY;
-			infos[i].image.image_view    = r._view->image_view;
-			infos[i].image.image_layout  = image_layout;
-			write.image_info             = &infos[i].image;
-
-			result->image_uses[result->image_use_count++] = {r._view, image_layout};
-		}
-		if (aprend_descriptor_type_reads_sampler(entry._type))
-			write.sampler = r._sampler->sampler;
+		++result->frame_set_count;
 	}
-	spudgpu_update_descriptor_sets(layout->instance->desc.device, writes, entry_count);
+
+	for (uint32_t frame = 0; frame < frame_set_count; ++frame) {
+		aprend_buffer_store **frame_stores = result->staged_stores + (size_t)frame * entry_count;
+		for (uint32_t i = 0; i < entry_count; ++i) {
+			const aprend_binding_set_entry &entry = entries[i];
+			spudgpu_write_descriptor_set &write   = writes[i];
+			write                                 = {};
+			infos[i]                              = {};
+			write.dst_set                         = result->sets[frame];
+			write.dst_binding                     = entry._binding;
+			write.dst_array_element               = entry._array_element;
+			write.descriptor_count                = 1;
+			write.descriptor_type                 = entry._type;
+
+			if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+				const auto &r                      = entry._resource._uniform;
+				const aprend_uniform_buffer buffer = r._set ? r._set->buffers[frame] : r._buffer;
+				infos[i].buffer.buffer             = buffer->buffer;
+				infos[i].buffer.offset             = buffer->buffer_view_desc.offset_from_parent_buffer + r._offset;
+				infos[i].buffer.range              = r._range ? r._range : buffer->total_size - r._offset;
+				write.buffer_info                  = &infos[i].buffer;
+				continue;
+			}
+			if (entry._type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+				const auto &r                      = entry._resource._storage;
+				const aprend_storage_buffer buffer = r._set ? r._set->buffers[frame] : r._buffer;
+				infos[i].buffer.buffer             = buffer->store.buffer;
+				infos[i].buffer.offset             = buffer->buffer_view_desc.offset_from_parent_buffer + r._offset;
+				infos[i].buffer.range              = r._range ? r._range : buffer->size - r._offset;
+				write.buffer_info                  = &infos[i].buffer;
+				// The same buffer in two slots is listed twice; a command
+				// list takes each store once.
+				if (buffer->store.staging)
+					frame_stores[result->staged_store_counts[frame]++] = &buffer->store;
+				continue;
+			}
+
+			const auto &r = entry._resource._image;
+			if (aprend_descriptor_type_reads_view(entry._type)) {
+				// A storage image is read and written in GENERAL; anything
+				// sampled is read in SHADER_READ_ONLY.
+				const SPUDGPU_IMAGE_LAYOUT image_layout =
+				    entry._type == SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE ? SPUDGPU_IMAGE_LAYOUT_GENERAL : SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY;
+				infos[i].image.image_view   = r._view->image_view;
+				infos[i].image.image_layout = image_layout;
+				write.image_info            = &infos[i].image;
+
+				// The same textures in every frame's set: recorded once.
+				if (frame == 0)
+					result->image_uses[result->image_use_count++] = {r._view, image_layout};
+			}
+			if (aprend_descriptor_type_reads_sampler(entry._type))
+				write.sampler = r._sampler->sampler;
+		}
+		spudgpu_update_descriptor_sets(layout->instance->desc.device, writes, entry_count);
+	}
 
 	free(writes);
 	free(infos);

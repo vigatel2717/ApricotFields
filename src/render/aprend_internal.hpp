@@ -9,7 +9,6 @@
 #include "render/aprendbuffers.h"
 #include "render/aprendcommands.h"
 #include "render/aprendcontext.h"
-#include "render/aprendframes.h"
 #include "render/aprendpipeline.h"
 #include "render/aprendswapchain.h"
 
@@ -20,8 +19,6 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <cstring>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
 /* ============================================================
@@ -80,8 +77,90 @@ typedef struct aprend_instance_t {
 
 	aprend_instance_desc desc{};
 	spudgpu_command_allocator cmd_allocator{nullptr};
-	spudgpu_command_list cmd_list{nullptr};
+	/* SPUDGPU_DEVICE_PROPERTIES::unified_memory of desc.device, read once at
+	 * creation. Decides where vertex, index and storage buffers are kept
+	 * (aprend_buffer_store). */
+	bool unified_memory{false};
+	/* Which copy of every buffer set is current: 0 to
+	 * desc.frames_in_flight - 1. */
+	uint32_t frame_index{0};
+	/* Paces frames. Every aprend_command_list_submit signals it to the next
+	 * submit_serial, and frame_last_serial[i] is the serial of the last
+	 * submission made while frame index i was current: what
+	 * aprend_instance_next_frame waits for before index i is current again.
+	 * 0 for an index nothing has been submitted in, which the fence, starting
+	 * at 0, has already reached. */
+	spudgpu_fence frame_fence{nullptr};
+	uint64_t submit_serial{0};
+	uint64_t frame_last_serial[APREND_MAX_FRAMES_IN_FLIGHT]{};
 } aprend_instance_t;
+
+/* The one way anything of [instance] reaches a queue. Submits [lists] on
+ * [queue], synchronized with [swap_chain] if it isn't NULL, and signals the
+ * instance's frame fence to the next serial, which it records against the
+ * current frame index and hands back through [out_serial] (NULL to skip). A
+ * failed submission takes no serial. */
+SPUDRESULT aprend_instance_submit(
+    aprend_instance instance,
+    spudgpu_command_queue queue,
+    spudgpu_command_list *lists,
+    uint32_t list_count,
+    spudgpu_swap_chain swap_chain,
+    uint64_t *out_serial);
+/* Blocks until the submission that took [serial], and every one before it,
+ * has finished. */
+SPUDRESULT aprend_instance_wait_serial(
+    aprend_instance instance,
+    uint64_t serial);
+
+/* Where the bytes of a vertex, index or storage buffer are kept, chosen from
+ * the device's memory model when the buffer is created.
+ *
+ * On a device whose memory is the system's, [buffer] is host-visible and a
+ * write goes straight into it: there is one memory, so nothing is gained by
+ * a second copy.
+ *
+ * On a device with memory of its own, [buffer] is in that memory, where the
+ * GPU reads it without crossing the bus, and can't be mapped. A write goes
+ * into [staging], a host-visible buffer of the same size that holds
+ * everything ever written, and widens the dirty range. The next
+ * aprend_command_list_submit of a list that uses the buffer copies the dirty
+ * range across ahead of the list's own commands.
+ *
+ * Uniform buffers don't use this: they are small and rewritten every frame,
+ * and stay host-visible and mapped on every device. */
+struct aprend_buffer_store {
+	aprend_instance instance{nullptr};
+	/* What the GPU reads, and what views and descriptors are made of. */
+	spudgpu_buffer buffer{nullptr};
+	/* NULL when [buffer] is written directly. */
+	spudgpu_buffer staging{nullptr};
+	uint64_t size{0};
+	/* The state [buffer] is used in, which a copy into it leaves it in. */
+	SPUDGPU_RESOURCE_STATE use_state{SPUDGPU_RESOURCE_STATE_COMMON};
+	/* Bytes written to [staging] and not yet copied: [dirty_begin,
+	 * dirty_end), empty when the two are equal. */
+	uint64_t dirty_begin{0};
+	uint64_t dirty_end{0};
+};
+
+/* Creates [store]'s buffers, of [size] bytes and for [usage]. On failure the
+ * store holds nothing. */
+SPUDRESULT aprend_buffer_store_create(
+    aprend_buffer_store *store,
+    aprend_instance instance,
+    uint64_t size,
+    SPUDGPU_BUFFER_USAGE usage,
+    SPUDGPU_RESOURCE_STATE use_state);
+/* Destroys whatever [store] holds. Views of its buffer go first. */
+void aprend_buffer_store_destroy(aprend_buffer_store *store);
+/* Copies [size] bytes from [data] to [offset]. The range is the caller's to
+ * have checked against the store's size. */
+SPUDRESULT aprend_buffer_store_write(
+    aprend_buffer_store *store,
+    uint64_t offset,
+    uint64_t size,
+    const void *data);
 
 typedef struct aprend_command_list_t {
 #if _DEBUG
@@ -91,6 +170,19 @@ typedef struct aprend_command_list_t {
 	~aprend_command_list_t();
 	aprend_instance instance{nullptr};
 	spudgpu_command_list cmd_list{nullptr};
+	/* Recorded at submit with the copies of whatever staged buffers the list
+	 * uses have been written since they were last copied, and submitted ahead
+	 * of cmd_list. Never recording while cmd_list is: the two share the
+	 * instance's allocator. */
+	spudgpu_command_list upload_list{nullptr};
+	/* Every staged buffer store the last compile found in use, once each. */
+	std::vector<aprend_buffer_store *> staged_stores{};
+	/* The instance's frame index at the last compile, and whether the list
+	 * binds a set that has a descriptor set for each frame. Such a list
+	 * reads that frame's copies and is only submittable while the frame index
+	 * is still the one it was compiled in. */
+	uint32_t compiled_frame{0};
+	bool uses_frame_sets{false};
 	std::vector<APREND_COMMAND> commands{};
 	/* Owned copies of each BEGIN_RENDERING's color target array, so recorded
 	 * commands never point at caller memory. Each inner vector's buffer stays
@@ -101,6 +193,8 @@ typedef struct aprend_command_list_t {
 	std::vector<std::vector<aprend_vertex_buffer>> vertex_buffer_storage{};
 	std::vector<std::vector<SPUDGPU_VIEWPORT>> viewport_storage{};
 	std::vector<std::vector<SPUDGPU_SCISSOR_RECT>> scissor_rect_storage{};
+	/* And the bytes of PUSH_CONSTANTS. */
+	std::vector<std::vector<uint8_t>> push_constant_storage{};
 	/* Set by aprend_send_command on a malformed command; fails compile until reset. */
 	bool recording_error{false};
 
@@ -164,7 +258,7 @@ typedef struct aprend_vertex_buffer_t {
 #endif
 	aprend_vertex_buffer_t() = default;
 	~aprend_vertex_buffer_t();
-	spudgpu_buffer buffer{nullptr};
+	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
 	aprend_buffer_layout vertex_layout{};
@@ -178,7 +272,7 @@ typedef struct aprend_index_buffer_t {
 #endif
 	aprend_index_buffer_t() = default;
 	~aprend_index_buffer_t();
-	spudgpu_buffer buffer{nullptr};
+	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
 	uint32_t index_count{0};
@@ -191,11 +285,36 @@ typedef struct aprend_storage_buffer_t {
 #endif
 	aprend_storage_buffer_t() = default;
 	~aprend_storage_buffer_t();
-	spudgpu_buffer buffer{nullptr};
+	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
 	uint64_t size{0};
 } aprend_storage_buffer_t;
+
+/* One uniform buffer for each frame in flight, all of one layout.
+ * buffers[instance->frame_index] is the current one. */
+typedef struct aprend_uniform_buffer_set_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_uniform_buffer_set_t() = default;
+	~aprend_uniform_buffer_set_t();
+	aprend_instance instance{nullptr};
+	aprend_uniform_buffer buffers[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	uint32_t buffer_count{0};
+} aprend_uniform_buffer_set_t;
+
+/* The same for storage buffers, all of one size. */
+typedef struct aprend_storage_buffer_set_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_storage_buffer_set_t() = default;
+	~aprend_storage_buffer_set_t();
+	aprend_instance instance{nullptr};
+	aprend_storage_buffer buffers[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	uint32_t buffer_count{0};
+} aprend_storage_buffer_set_t;
 
 typedef struct aprend_shader_t {
 #if _DEBUG
@@ -216,6 +335,15 @@ typedef struct aprend_graphics_pipeline_t {
 	aprend_graphics_pipeline_desc desc{};
 	aprend_instance instance{nullptr};
 	spudgpu_shader_pipeline pipeline{nullptr};
+	/* One allocation holding the vertex entry point's name and then the
+	 * fragment's, each with its terminator. desc's two entry point pointers
+	 * point into it, not at the caller's strings. */
+	char *entry_points{nullptr};
+	/* Stride of each counted vertex binding, for a draw to check the vertex
+	 * buffer in that slot against. */
+	uint32_t vertex_strides[APREND_MAX_VERTEX_BINDINGS]{};
+	/* Where the furthest push constant range ends; 0 with no ranges. */
+	uint32_t push_constant_end{0};
 } aprend_graphics_pipeline_t;
 
 typedef struct aprend_binding_layout_t {
@@ -251,8 +379,12 @@ typedef struct aprend_binding_set_t {
 	aprend_binding_set_t() = default;
 	~aprend_binding_set_t();
 	aprend_binding_layout layout{nullptr};
-	/* From one of the layout's pools; goes back on its free list. */
-	spudgpu_descriptor_set set{nullptr};
+	/* From the layout's pools; each goes back on its free list. One set if
+	 * every entry is a single buffer, texture or sampler. If any entry is a
+	 * buffer set there is one for each frame in flight, sets[f] pointing at
+	 * copy f of every buffer set and at the same single resources. */
+	spudgpu_descriptor_set sets[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	uint32_t frame_set_count{0};
 	/* Every texture view the set holds and the layout its slot reads the
 	 * texture in, for a command list to move the texture there before a pass
 	 * that binds the set. */
@@ -262,6 +394,20 @@ typedef struct aprend_binding_set_t {
 	};
 	image_use *image_uses{nullptr};
 	uint32_t image_use_count{0};
+	/* The store of every storage buffer the set holds that has a staging
+	 * buffer, for a command list to copy before it runs. One run of
+	 * staged_store_capacity slots for each of the frame_set_count sets, run f
+	 * holding staged_store_counts[f] stores: what sets[f] reads. */
+	aprend_buffer_store **staged_stores{nullptr};
+	uint32_t staged_store_capacity{0};
+	uint32_t staged_store_counts[APREND_MAX_FRAMES_IN_FLIGHT]{};
 } aprend_binding_set_t;
+
+/* Which of [set]'s descriptor sets a command list compiled in frame [frame]
+ * binds: the frame's own if the set has one for each frame, its only one
+ * otherwise. */
+inline uint32_t aprend_binding_set_frame_slot(const aprend_binding_set_t *set, uint32_t frame) {
+	return set->frame_set_count > 1 ? frame : 0;
+}
 
 #endif // APREND_INTERNAL_HPP

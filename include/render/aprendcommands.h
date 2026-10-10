@@ -34,8 +34,15 @@ typedef uint32_t APREND_COMMAND_TYPE;
 
 enum {
 	APREND_COMMAND_NONE                   = 0,
+	/* Puts _vertex_buffers[i] at vertex buffer slot _start_slot + i. Slot N
+	 * is what a pipeline's _vertex_bindings[N] reads (aprendpipeline.h), per
+	 * vertex or per instance as that binding says. At each draw, every slot
+	 * the bound pipeline reads must hold a buffer whose stride is the
+	 * binding's. */
 	APREND_COMMAND_SET_VERTEX_BUFFERS     = 1,
 	APREND_COMMAND_SET_INDEX_BUFFER       = 2,
+	/* Inside a pass only, and it lasts until the pass ends: each pass sets
+	 * its own pipeline before it draws. */
 	APREND_COMMAND_SET_SHADER_PIPELINE    = 3,
 	APREND_COMMAND_DRAW                   = 4,
 	APREND_COMMAND_DRAW_INDEXED           = 5,
@@ -55,9 +62,10 @@ enum {
 	 * every slot the bound pipeline declares must hold a set created from the
 	 * layout the pipeline declares there.
 	 *
-	 * Before a pass begins, every texture in a set that is in a slot then, or
-	 * is put in one during the pass, is moved into the layout its binding
-	 * reads it in. Such a texture can't also be a target of that pass, nor be
+	 * Before a pass begins, every texture in a set that a draw of the pass
+	 * reads (one in a slot the pipeline bound at that draw declares) is
+	 * moved into the layout its binding reads it in. A set left in a slot no
+	 * draw of the pass reads is not touched. Such a texture can't also be a target of that pass, nor be
 	 * in a sampled slot and a storage image slot in the same pass. */
 	APREND_COMMAND_SET_BINDING_SET        = 12,
 	/* Copies _source into _swap_chain's acquired back buffer (aprendswapchain.h)
@@ -65,15 +73,23 @@ enum {
 	 * Where the sizes differ, only the overlapping top-left region is copied.
 	 * The back buffer must have been acquired before compiling. */
 	APREND_COMMAND_PRESENT_TEXTURE        = 13,
+	/* Writes _size bytes at byte _offset of the bound pipeline's push
+	 * constant block, for the following draws. After SET_SHADER_PIPELINE, in
+	 * the same pass: the bytes are written for that pipeline and are not
+	 * carried to the next one set. _offset and _size are multiples of 4,
+	 * _size is not 0, and the bytes must lie inside the ranges the pipeline
+	 * declares (_push_constant_ranges). What a draw reads from a byte no
+	 * PUSH_CONSTANTS has written since its pipeline was set is undefined. */
+	APREND_COMMAND_PUSH_CONSTANTS         = 14,
 };
 
 typedef struct APREND_COMMAND {
 	APREND_COMMAND_TYPE _type;
 	union {
 		/* Every array a command points at (_vertex_buffers, _viewports,
-		 * _scissor_rects, _color_targets) is copied into the command list by
-		 * aprend_send_command, so the caller's array only has to live for
-		 * that call. What the entries refer to - buffers, views - must stay
+		 * _scissor_rects, _color_targets, the _data of PUSH_CONSTANTS) is
+		 * copied into the command list by aprend_send_command, so the
+		 * caller's array only has to live for that call. What the entries refer to - buffers, views - must stay
 		 * alive until the list's submission has completed. */
 		struct {
 			aprend_vertex_buffer *_vertex_buffers;
@@ -136,6 +152,11 @@ typedef struct APREND_COMMAND {
 			aprend_texture2d _source;
 			aprend_swap_chain _swap_chain;
 		} _present_texture;
+		struct {
+			const void *_data;
+			uint32_t _offset;
+			uint32_t _size;
+		} _push_constants;
 	} _params;
 } APREND_COMMAND;
 
@@ -149,7 +170,10 @@ void aprend_command_list_reset(aprend_command_list cmd_list);
  * aprend_command_list_compile fail, until aprend_command_list_reset:
  * a BEGIN_RENDERING with more than APREND_MAX_COLOR_TARGETS color targets;
  * a NULL array with a nonzero count in BEGIN_RENDERING, SET_VERTEX_BUFFERS,
- * SET_VIEWPORTS or SET_SCISSOR_RECTS; a NULL entry in _vertex_buffers. */
+ * SET_VIEWPORTS or SET_SCISSOR_RECTS; a NULL entry in _vertex_buffers; a
+ * SET_VERTEX_BUFFERS that runs past slot APREND_MAX_VERTEX_BINDINGS - 1; a
+ * PUSH_CONSTANTS with NULL _data, a _size of 0, or an _offset or _size that
+ * is not a multiple of 4. */
 void aprend_send_command(
     aprend_command_list cmd_list,
     APREND_COMMAND cmd);
@@ -165,6 +189,11 @@ void aprend_send_command(
  * sent or the pass scope is violated: a draw outside any pass, a nested
  * BEGIN_RENDERING, END_RENDERING with no open BEGIN_RENDERING, or a
  * BEGIN_RENDERING left open at the end of the list. Also fails on a
+ * SET_SHADER_PIPELINE outside a pass or with a NULL pipeline, on a draw in a
+ * pass that hasn't set a pipeline, on a draw whose pipeline reads a vertex
+ * buffer slot that is empty or holds a buffer of another stride, on a
+ * PUSH_CONSTANTS with no pipeline set in its pass or with bytes outside the
+ * pipeline's push constant ranges, on a
  * SET_BINDING_SET with a NULL set or a _slot of APREND_MAX_BINDING_LAYOUTS or
  * more, on a draw whose pipeline declares a set slot that holds no set or a
  * set of another layout, and on a pass whose binding sets break the texture
@@ -172,13 +201,20 @@ void aprend_send_command(
 bool aprend_command_list_compile(aprend_command_list cmd_list);
 
 /* Submits the last successful compile on [queue] and commits the image
- * layouts it leaves its textures in. Submissions must run in submit order
+ * layouts it leaves its textures in. The submission counts towards the
+ * current frame, which aprend_instance_next_frame (aprendcontext.h) waits
+ * for; every list of one instance goes on the same queue. Whatever was written to the vertex,
+ * index and storage buffers the list uses, and has not reached the device
+ * yet, is copied there first in the same submission (aprendbuffers.h). Those
+ * buffers must still exist: destroying one and then submitting a list
+ * compiled against it is a use after free. Submissions must run in submit order
  * (one queue), which is what the tracked layouts assume.
  *
  * Returns false without submitting if the list hasn't compiled successfully,
- * or if a texture it uses has changed layout since it was compiled (another
- * list touching the same texture was submitted in between) - recompile it and
- * submit again. A compiled list may be submitted again as long as that still
+ * if a texture it uses has changed layout since it was compiled (another
+ * list touching the same texture was submitted in between), or if it binds a
+ * set holding a buffer set and aprend_instance_next_frame has moved the frame
+ * on since it was compiled - recompile it and submit again. A compiled list may be submitted again as long as that still
  * holds. The caller decides when to wait for the GPU.
  *
  * A list with a PRESENT_TEXTURE must be submitted on its swap chain's queue,

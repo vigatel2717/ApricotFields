@@ -38,6 +38,8 @@ typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
 typedef struct aprend_index_buffer_t *aprend_index_buffer;
 typedef struct aprend_uniform_buffer_t *aprend_uniform_buffer;
 typedef struct aprend_storage_buffer_t *aprend_storage_buffer;
+typedef struct aprend_uniform_buffer_set_t *aprend_uniform_buffer_set;
+typedef struct aprend_storage_buffer_set_t *aprend_storage_buffer_set;
 
 typedef uint32_t APREND_UNIFORM_TYPE;
 enum {
@@ -70,6 +72,11 @@ typedef struct aprend_uniform_layout {
 	aprend_uniform *uniforms;
 } aprend_uniform_layout;
 
+/* A buffer for one std140 uniform block. Nothing is placed: each uniform's
+ * [offset] is the caller's and must be where the shader's block has it. The
+ * buffer ends where the furthest uniform does, rounded up to 16, with an
+ * array (a [size] above 1) taking 16 bytes an element, or the type's size if
+ * that is larger. */
 aprend_uniform_buffer aprend_uniform_buffer_create(
     aprend_instance instance,
     const aprend_uniform_layout *layout);
@@ -83,7 +90,8 @@ bool aprend_uniform_buffer_update(
 /* Writes the uniform named [name] (case-sensitive; the first one, if the
  * layout repeats a name) at the offset its layout entry gives. [pData] must
  * hold the whole uniform: the type's size times its element count, tightly
- * packed. Names are copied at aprend_uniform_buffer_create, so the layout
+ * packed. An array's elements are written where std140 puts them, 16 bytes
+ * apart or the type's size if that is larger. Names are copied at aprend_uniform_buffer_create, so the layout
  * passed there doesn't have to outlive the buffer.
  *
  * Returns false if an argument is NULL, no uniform has that name, the type is
@@ -125,6 +133,27 @@ uint32_t aprend_buffer_layout_get_element_index(
     const char *name);
 uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout);
 
+/* Where a vertex, index or storage buffer is kept follows the device's memory
+ * (SPUDGPU_DEVICE_PROPERTIES::unified_memory, read when the instance is
+ * created), and the calls behave the same either way.
+ *
+ * On a device whose memory is the system's, the buffer is host-visible and a
+ * write goes straight into it. On a device with memory of its own, the buffer
+ * is in that memory and a write goes into a staging copy Aprend keeps beside
+ * it; the next aprend_command_list_submit of a list that uses the buffer
+ * copies what was written across, ahead of the list's own commands.
+ *
+ * The rule for the caller is one rule: a write (at creation or by an update
+ * call) is seen by any submission made after it, and must not be made while
+ * submitted work that uses the buffer has yet to finish. A buffer written and
+ * never used by a submitted list is never copied.
+ *
+ * A uniform buffer is host-visible and written directly on every device.
+ *
+ * A vertex buffer of [vertex_count] vertices of [vertex_layout], holding a
+ * copy of the data at [pData] or left unwritten if [pData] is NULL. NULL if
+ * [instance] or [vertex_layout] is NULL, the layout has no elements or a
+ * stride of 0, [vertex_count] is 0, or the device refuses the buffer. */
 aprend_vertex_buffer aprend_vertex_buffer_create(
     aprend_instance instance,
     const aprend_buffer_layout *vertex_layout,
@@ -132,6 +161,9 @@ aprend_vertex_buffer aprend_vertex_buffer_create(
     void *pData);
 void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer);
 spudgpu_buffer_view aprend_vertex_buffer_get_spudgpu_buffer_view(aprend_vertex_buffer buffer);
+/* Writes [vertex_count] vertices from [pData], starting at vertex
+ * [vertex_offset]. False, with nothing written, if [buffer] or [pData] is
+ * NULL, [vertex_count] is 0, or the range runs past the end of the buffer. */
 bool aprend_vertex_buffer_update(
     aprend_vertex_buffer buffer,
     uint32_t vertex_offset,
@@ -144,6 +176,10 @@ void aprend_vertex_buffer_get_layout(
 
 typedef enum APREND_INDEX_STRIDE { APREND_INDEX_STRIDE_NONE = 0, APREND_INDEX_STRIDE_UINT16 = 2, APREND_INDEX_STRIDE_UINT32 = 4 } APREND_INDEX_STRIDE;
 
+/* An index buffer of [index_count] indices of [stride] bytes, holding a copy
+ * of the data at [pData] or left unwritten if [pData] is NULL. NULL if
+ * [instance] is NULL, [stride] is not UINT16 or UINT32, [index_count] is 0,
+ * or the device refuses the buffer. */
 aprend_index_buffer aprend_index_buffer_create(
     aprend_instance instance,
     APREND_INDEX_STRIDE stride,
@@ -151,6 +187,9 @@ aprend_index_buffer aprend_index_buffer_create(
     void *pData);
 void aprend_index_buffer_destroy(aprend_index_buffer buffer);
 spudgpu_buffer_view aprend_index_buffer_get_spudgpu_buffer_view(aprend_index_buffer buffer);
+/* Writes [index_count] indices from [pData], starting at index
+ * [index_offset]. False, with nothing written, if [buffer] or [pData] is
+ * NULL, [index_count] is 0, or the range runs past the end of the buffer. */
 bool aprend_index_buffer_update(
     aprend_index_buffer buffer,
     uint32_t index_offset,
@@ -161,11 +200,8 @@ uint32_t aprend_index_buffer_get_index_count(aprend_index_buffer buffer);
 
 /* A storage buffer of [size] bytes, holding a copy of the [size] bytes at
  * [pData], or left unwritten if [pData] is NULL. NULL if [instance] is NULL,
- * [size] is 0, or the device refuses the buffer.
- *
- * The buffer is in host-visible memory and is written directly, so a write is
- * seen by anything the GPU has not finished running: the caller makes sure no
- * submitted work still reads the buffer before updating it. */
+ * [size] is 0, or the device refuses the buffer. Where it is kept and when a
+ * write is seen are as for a vertex buffer, above. */
 aprend_storage_buffer aprend_storage_buffer_create(
     aprend_instance instance,
     uint64_t size,
@@ -176,6 +212,73 @@ void aprend_storage_buffer_destroy(aprend_storage_buffer buffer);
  * [local_offset] + [size] runs past the end of the buffer. */
 bool aprend_storage_buffer_update(
     aprend_storage_buffer buffer,
+    uint64_t local_offset,
+    uint64_t size,
+    void *pData);
+
+/****************************************************
+ * Buffer sets: one buffer for each frame in flight
+ *
+ * A single uniform or storage buffer that is rewritten every frame can only
+ * be written once the GPU has finished the last frame that reads it. A set
+ * holds aprend_instance_desc::frames_in_flight copies instead. The update
+ * calls write the copy of the current frame (aprend_instance_next_frame,
+ * aprendcontext.h), and a binding set that holds the buffer set makes a
+ * command list read the copy of the frame it is compiled in. So the frame
+ * being written and the frames still on the GPU never share a copy.
+ *
+ * Each copy keeps what was last written to it, which was frames_in_flight
+ * frames ago, not last frame: an update is not carried from one copy to the
+ * next. Write, each frame, everything that frame reads.
+ *
+ * A set is put in a binding set through the _set member of an entry's
+ * _uniform or _storage (aprendpipeline.h). With frames_in_flight 1 a set is
+ * one buffer and behaves as a single buffer does.
+ ****************************************************/
+
+/* A set of uniform buffers of [layout], as aprend_uniform_buffer_create makes
+ * each. NULL if [instance] or [layout] is NULL or a buffer can't be created. */
+aprend_uniform_buffer_set aprend_uniform_buffer_set_create(
+    aprend_instance instance,
+    const aprend_uniform_layout *layout);
+/* Destroys the set and its buffers. NULL is accepted. Every binding set
+ * holding it goes first, and every submission that reads it must have
+ * finished. */
+void aprend_uniform_buffer_set_destroy(aprend_uniform_buffer_set set);
+/* The copy for frame [frame_index], owned by the set: not to be destroyed.
+ * NULL if [set] is NULL or [frame_index] is not below frames_in_flight. */
+aprend_uniform_buffer aprend_uniform_buffer_set_get_buffer(
+    aprend_uniform_buffer_set set,
+    uint32_t frame_index);
+/* aprend_uniform_buffer_update on the current frame's copy. */
+bool aprend_uniform_buffer_set_update(
+    aprend_uniform_buffer_set set,
+    uint32_t local_offset,
+    uint32_t size,
+    void *pData);
+/* aprend_uniform_buffer_update_by_name on the current frame's copy. */
+bool aprend_uniform_buffer_set_update_by_name(
+    aprend_uniform_buffer_set set,
+    const char *name,
+    void *pData);
+
+/* A set of storage buffers of [size] bytes, as aprend_storage_buffer_create
+ * makes each. Every copy starts with the [size] bytes at [pData], or
+ * unwritten if [pData] is NULL. NULL if [instance] is NULL, [size] is 0, or a
+ * buffer can't be created. */
+aprend_storage_buffer_set aprend_storage_buffer_set_create(
+    aprend_instance instance,
+    uint64_t size,
+    void *pData);
+/* As aprend_uniform_buffer_set_destroy. */
+void aprend_storage_buffer_set_destroy(aprend_storage_buffer_set set);
+/* As aprend_uniform_buffer_set_get_buffer. */
+aprend_storage_buffer aprend_storage_buffer_set_get_buffer(
+    aprend_storage_buffer_set set,
+    uint32_t frame_index);
+/* aprend_storage_buffer_update on the current frame's copy. */
+bool aprend_storage_buffer_set_update(
+    aprend_storage_buffer_set set,
     uint64_t local_offset,
     uint64_t size,
     void *pData);

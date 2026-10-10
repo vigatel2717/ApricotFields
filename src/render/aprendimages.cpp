@@ -12,17 +12,30 @@ static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_RENDER_TARGET) 
 static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT));
 static_assert(APREND_TEXTURE_USAGE_BITS(APREND_TEXTURE_USAGE_BIT_STORAGE) == SPUDGPU_IMAGE_USAGE(SPUDGPU_IMAGE_USAGE_STORAGE));
 
-static uint64_t aprend_texture2d_view_aspect_mask(SPUDGPU_FORMAT format) {
+// [sampled] is a view a shader samples: of a format with depth and stencil it
+// covers the depth alone, since a sampled view reads one aspect.
+static uint64_t aprend_texture2d_view_aspect_mask(
+    SPUDGPU_FORMAT format,
+    bool sampled = false) {
 	switch (format) {
 	case SPUDGPU_FORMAT_D24_UNORM_S8_UINT:
 	case SPUDGPU_FORMAT_D32_FLOAT_S8X24_UINT:
-		return 2 | 4; // DEPTH | STENCIL
+		return sampled ? 2 : (2 | 4); // DEPTH, or DEPTH | STENCIL
 	case SPUDGPU_FORMAT_D16_UNORM:
 	case SPUDGPU_FORMAT_D32_FLOAT:
 		return 2; // DEPTH
 	default:
 		return 1; // COLOR
 	}
+}
+
+// One side of mip [level] of a texture whose level 0 is [size] along it.
+static uint32_t aprend_mip_size(
+    uint32_t size,
+    uint32_t level) {
+	// A shift by the type's width or more is undefined; such a level is 1.
+	const uint32_t mip_size = level < 32 ? size >> level : 0;
+	return mip_size ? mip_size : 1;
 }
 
 static uint32_t aprend_compute_mip_levels(
@@ -99,6 +112,23 @@ static bool aprend_resized_image_desc(
 	return true;
 }
 
+// The usage bit a texture must have been created with for a view of [type],
+// APREND_TEXTURE_USAGE_BIT_NONE if [type] is not a view type.
+static APREND_TEXTURE_USAGE_BITS aprend_texture_view_type_usage(APREND_TEXTURE_VIEW_TYPE type) {
+	switch (type) {
+	case APREND_TEXTURE_VIEW_TYPE_UNORDERED_ACCESS:
+		return APREND_TEXTURE_USAGE_BIT_STORAGE;
+	case APREND_TEXTURE_VIEW_TYPE_RENDER_TAGET:
+		return APREND_TEXTURE_USAGE_BIT_RENDER_TARGET;
+	case APREND_TEXTURE_VIEW_TYPE_DEPTH_STENCIL:
+		return APREND_TEXTURE_USAGE_BIT_DEPTH_STENCIL;
+	case APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE:
+		return APREND_TEXTURE_USAGE_BIT_SHADER_RESOURCE;
+	default:
+		return APREND_TEXTURE_USAGE_BIT_NONE;
+	}
+}
+
 aprend_texture_view_t::~aprend_texture_view_t() { spudgpu_destroy_image_view(this->image_view); }
 aprend_sampler_t::~aprend_sampler_t() {
 	// A sampler that failed to create has nothing to destroy.
@@ -141,7 +171,6 @@ aprend_texture2d aprend_texture2d_create(
 #if _DEBUG
 	image_desc.debug_name = desc->debug_name;
 #endif
-	/* TODO: desc->initial_data upload requires aprend_texture2d_update, once mip_level/array_layer targeting is added to it. */
 
 	SPUDRESULT sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
 	if (sr != SPUD_SUCCESS)
@@ -170,6 +199,9 @@ aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture) { retu
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) { return texture ? texture->image : nullptr; }
 bool aprend_texture2d_update(
     aprend_texture2d texture,
+    spudgpu_command_queue queue,
+    uint32_t mip_level,
+    uint32_t array_layer,
     uint32_t x_offset,
     uint32_t y_offset,
     uint32_t width,
@@ -177,9 +209,24 @@ bool aprend_texture2d_update(
     void **ppData) {
 	if (!(texture && width && height && ppData))
 		return false;
+	if (!queue)
+		return false;
 	if (!(*ppData))
 		return false;
-	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height)
+	if (mip_level >= texture->desc.mip_levels)
+		return false;
+	if (array_layer >= texture->desc.array_layers)
+		return false;
+	// The region is in texels of the level, which is at least one texel a side.
+	const uint32_t mip_width  = aprend_mip_size(texture->desc.width, mip_level);
+	const uint32_t mip_height = aprend_mip_size(texture->desc.height, mip_level);
+	if (x_offset > mip_width)
+		return false;
+	if (width > mip_width - x_offset)
+		return false;
+	if (y_offset > mip_height)
+		return false;
+	if (height > mip_height - y_offset)
 		return false;
 
 	uint32_t bytes_per_pixel = spudgpu_format_bit_count(texture->desc.format) / 8;
@@ -189,7 +236,7 @@ bool aprend_texture2d_update(
 	// doesn't care. Query the backend's actual required pitch rather than
 	// assuming tightly-packed rows work everywhere.
 	uint64_t aligned_row_pitch = 0, unused_full_mip_size = 0;
-	spudgpu_get_image_buffer_copy_size(texture->image, 0, &aligned_row_pitch, &unused_full_mip_size);
+	spudgpu_get_image_buffer_copy_size(texture->image, mip_level, &aligned_row_pitch, &unused_full_mip_size);
 	uint64_t region_size = aligned_row_pitch * height;
 
 	spudgpu_buffer_desc staging_desc{};
@@ -215,9 +262,10 @@ bool aprend_texture2d_update(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
-		copy_desc.mip_level         = 0;
+		copy_desc.mip_level         = mip_level;
+		copy_desc.base_array_layer  = array_layer;
 		copy_desc.array_layer_count = 1;
 		copy_desc.buffer_row_length = buffer_row_length_texels;
 		copy_desc.image_x           = x_offset;
@@ -233,6 +281,9 @@ bool aprend_texture2d_update(
 }
 bool aprend_texture2d_get_data(
     aprend_texture2d texture,
+    spudgpu_command_queue queue,
+    uint32_t mip_level,
+    uint32_t array_layer,
     uint32_t x_offset,
     uint32_t y_offset,
     uint32_t width,
@@ -240,16 +291,31 @@ bool aprend_texture2d_get_data(
     void **ppData) {
 	if (!(texture && width && height && ppData))
 		return false;
+	if (!queue)
+		return false;
 	if (!(*ppData))
 		return false;
-	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height)
+	if (mip_level >= texture->desc.mip_levels)
+		return false;
+	if (array_layer >= texture->desc.array_layers)
+		return false;
+	// The region is in texels of the level, which is at least one texel a side.
+	const uint32_t mip_width  = aprend_mip_size(texture->desc.width, mip_level);
+	const uint32_t mip_height = aprend_mip_size(texture->desc.height, mip_level);
+	if (x_offset > mip_width)
+		return false;
+	if (width > mip_width - x_offset)
+		return false;
+	if (y_offset > mip_height)
+		return false;
+	if (height > mip_height - y_offset)
 		return false;
 
 	uint32_t bytes_per_pixel = spudgpu_format_bit_count(texture->desc.format) / 8;
 	uint32_t tight_row_pitch = width * bytes_per_pixel;
 
 	uint64_t aligned_row_pitch = 0, unused_full_mip_size = 0;
-	spudgpu_get_image_buffer_copy_size(texture->image, 0, &aligned_row_pitch, &unused_full_mip_size);
+	spudgpu_get_image_buffer_copy_size(texture->image, mip_level, &aligned_row_pitch, &unused_full_mip_size);
 	uint64_t region_size = aligned_row_pitch * height;
 
 	spudgpu_buffer_desc staging_desc{};
@@ -263,9 +329,10 @@ bool aprend_texture2d_get_data(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
-		copy_desc.mip_level         = 0;
+		copy_desc.mip_level         = mip_level;
+		copy_desc.base_array_layer  = array_layer;
 		copy_desc.array_layer_count = 1;
 		copy_desc.buffer_row_length = buffer_row_length_texels;
 		copy_desc.image_x           = x_offset;
@@ -361,7 +428,6 @@ aprend_texture3d aprend_texture3d_create(
 #if _DEBUG
 	image_desc.debug_name = desc->debug_name;
 #endif
-	/* TODO: desc->initial_data upload requires aprend_texture3d_update, once mip_level targeting is added to it. */
 
 	SPUDRESULT sr = spudgpu_create_image(result->instance->desc.device, &image_desc, &result->image);
 	if (sr != SPUD_SUCCESS)
@@ -394,6 +460,8 @@ spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d text
 spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture) { return texture ? texture->image : NULL; }
 bool aprend_texture3d_update(
     aprend_texture3d texture,
+    spudgpu_command_queue queue,
+    uint32_t mip_level,
     uint32_t x_offset,
     uint32_t y_offset,
     uint32_t z_offset,
@@ -403,9 +471,27 @@ bool aprend_texture3d_update(
     void **ppData) {
 	if (!(texture && width && height && depth && ppData))
 		return false;
+	if (!queue)
+		return false;
 	if (!(*ppData))
 		return false;
-	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height || z_offset + depth > texture->desc.depth)
+	if (mip_level >= texture->desc.mip_levels)
+		return false;
+	// The region is in texels of the level, which is at least one texel a side.
+	const uint32_t mip_width  = aprend_mip_size(texture->desc.width, mip_level);
+	const uint32_t mip_height = aprend_mip_size(texture->desc.height, mip_level);
+	const uint32_t mip_depth  = aprend_mip_size(texture->desc.depth, mip_level);
+	if (x_offset > mip_width)
+		return false;
+	if (width > mip_width - x_offset)
+		return false;
+	if (y_offset > mip_height)
+		return false;
+	if (height > mip_height - y_offset)
+		return false;
+	if (z_offset > mip_depth)
+		return false;
+	if (depth > mip_depth - z_offset)
 		return false;
 
 	uint32_t bytes_per_pixel   = spudgpu_format_bit_count(texture->desc.format) / 8;
@@ -416,7 +502,7 @@ bool aprend_texture3d_update(
 	// between depth slices in our own staging buffer just needs to match
 	// whatever row pitch we actually used.
 	uint64_t aligned_row_pitch = 0, unused_full_mip_size = 0;
-	spudgpu_get_image_buffer_copy_size(texture->image, 0, &aligned_row_pitch, &unused_full_mip_size);
+	spudgpu_get_image_buffer_copy_size(texture->image, mip_level, &aligned_row_pitch, &unused_full_mip_size);
 	uint64_t aligned_slice_pitch = aligned_row_pitch * height;
 	uint64_t region_size         = aligned_slice_pitch * depth;
 
@@ -443,9 +529,9 @@ bool aprend_texture3d_update(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
-		copy_desc.mip_level           = 0;
+		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
 		copy_desc.buffer_row_length   = buffer_row_length_texels;
 		copy_desc.buffer_image_height = height;
@@ -463,6 +549,8 @@ bool aprend_texture3d_update(
 }
 bool aprend_texture3d_get_data(
     aprend_texture3d texture,
+    spudgpu_command_queue queue,
+    uint32_t mip_level,
     uint32_t x_offset,
     uint32_t y_offset,
     uint32_t z_offset,
@@ -472,9 +560,27 @@ bool aprend_texture3d_get_data(
     void **ppData) {
 	if (!(texture && width && height && depth && ppData))
 		return false;
+	if (!queue)
+		return false;
 	if (!(*ppData))
 		return false;
-	if (x_offset + width > texture->desc.width || y_offset + height > texture->desc.height || z_offset + depth > texture->desc.depth)
+	if (mip_level >= texture->desc.mip_levels)
+		return false;
+	// The region is in texels of the level, which is at least one texel a side.
+	const uint32_t mip_width  = aprend_mip_size(texture->desc.width, mip_level);
+	const uint32_t mip_height = aprend_mip_size(texture->desc.height, mip_level);
+	const uint32_t mip_depth  = aprend_mip_size(texture->desc.depth, mip_level);
+	if (x_offset > mip_width)
+		return false;
+	if (width > mip_width - x_offset)
+		return false;
+	if (y_offset > mip_height)
+		return false;
+	if (height > mip_height - y_offset)
+		return false;
+	if (z_offset > mip_depth)
+		return false;
+	if (depth > mip_depth - z_offset)
 		return false;
 
 	uint32_t bytes_per_pixel   = spudgpu_format_bit_count(texture->desc.format) / 8;
@@ -482,7 +588,7 @@ bool aprend_texture3d_get_data(
 	uint64_t tight_slice_pitch = (uint64_t)tight_row_pitch * height;
 
 	uint64_t aligned_row_pitch = 0, unused_full_mip_size = 0;
-	spudgpu_get_image_buffer_copy_size(texture->image, 0, &aligned_row_pitch, &unused_full_mip_size);
+	spudgpu_get_image_buffer_copy_size(texture->image, mip_level, &aligned_row_pitch, &unused_full_mip_size);
 	uint64_t aligned_slice_pitch = aligned_row_pitch * height;
 	uint64_t region_size         = aligned_slice_pitch * depth;
 
@@ -497,9 +603,9 @@ bool aprend_texture3d_get_data(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
+	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
-		copy_desc.mip_level           = 0;
+		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
 		copy_desc.buffer_row_length   = buffer_row_length_texels;
 		copy_desc.buffer_image_height = height;
@@ -584,8 +690,18 @@ bool aprend_texture3d_resize(
 aprend_texture_view aprend_texture_view_create_2d(
     aprend_texture2d texture,
     APREND_TEXTURE_VIEW_TYPE type) {
-	if (!texture || type == APREND_TEXTURE_VIEW_TYPE_NONE)
+	if (!texture)
 		return nullptr;
+	const APREND_TEXTURE_USAGE_BITS needed_usage = aprend_texture_view_type_usage(type);
+	if (needed_usage == APREND_TEXTURE_USAGE_BIT_NONE) {
+		printf("apricot: aprend_texture_view_create_2d: type %u is not a view type\n", (unsigned)type);
+		return nullptr;
+	}
+	if (!(texture->desc.usage & needed_usage)) {
+		printf("apricot: aprend_texture_view_create_2d: a view of type %u needs usage bit %u, and the texture's usage is %u\n",
+		       (unsigned)type, (unsigned)needed_usage, (unsigned)texture->desc.usage);
+		return nullptr;
+	}
 	aprend_texture_view_t *result = (aprend_texture_view_t *)malloc(sizeof(aprend_texture_view_t));
 	if (!result)
 		return nullptr;
@@ -599,7 +715,7 @@ aprend_texture_view aprend_texture_view_create_2d(
 	spudgpu_image_view_desc imgvd{};
 	imgvd.parent_image                        = texture->image;
 	imgvd.type                                = SPUDGPU_IMAGE_VIEW_TYPE_2D;
-	imgvd.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(texture->desc.format);
+	imgvd.subresource_range.aspect_mask       = aprend_texture2d_view_aspect_mask(texture->desc.format, type == APREND_TEXTURE_VIEW_TYPE_SHADER_RESOURCE);
 	imgvd.subresource_range.base_mip_level    = 0;
 	imgvd.subresource_range.mip_level_count   = texture->desc.mip_levels;
 	imgvd.subresource_range.base_array_layer  = 0;
@@ -618,8 +734,18 @@ failedattempt:
 aprend_texture_view aprend_texture_view_create_3d(
     aprend_texture3d texture,
     APREND_TEXTURE_VIEW_TYPE type) {
-	if (!texture || type == APREND_TEXTURE_VIEW_TYPE_NONE)
+	if (!texture)
 		return nullptr;
+	const APREND_TEXTURE_USAGE_BITS needed_usage = aprend_texture_view_type_usage(type);
+	if (needed_usage == APREND_TEXTURE_USAGE_BIT_NONE) {
+		printf("apricot: aprend_texture_view_create_3d: type %u is not a view type\n", (unsigned)type);
+		return nullptr;
+	}
+	if (!(texture->desc.usage & needed_usage)) {
+		printf("apricot: aprend_texture_view_create_3d: a view of type %u needs usage bit %u, and the texture's usage is %u\n",
+		       (unsigned)type, (unsigned)needed_usage, (unsigned)texture->desc.usage);
+		return nullptr;
+	}
 	aprend_texture_view_t *result = (aprend_texture_view_t *)malloc(sizeof(aprend_texture_view_t));
 	if (!result)
 		return nullptr;

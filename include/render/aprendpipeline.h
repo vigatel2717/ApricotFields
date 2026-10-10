@@ -15,11 +15,6 @@
 extern "C" {
 #endif // __cplusplus
 
-typedef struct aprend_graphics_pipeline_layout_t aprend_graphics_pipeline_layout;
-
-
-
-
 /**
  * @brief Opaque handle to one compiled shader stage.
  */
@@ -158,10 +153,42 @@ aprend_binding_layout aprend_binding_layout_create(
 void aprend_binding_layout_destroy(aprend_binding_layout layout);
 
 /**
+ * @brief Upper bound on the vertex bindings of one pipeline, and on the
+ * vertex buffer slots of a command list.
+ */
+#define APREND_MAX_VERTEX_BINDINGS SPUDGPU_MAX_VERTEX_BINDINGS
+
+/**
+ * @brief Upper bound on the push constant ranges of one pipeline.
+ */
+#define APREND_MAX_PUSH_CONSTANT_RANGES SPUDGPU_MAX_PUSH_CONSTANT_RANGES
+
+/**
+ * @brief The attributes a pipeline reads from one vertex buffer slot, and how
+ * often it steps to the next element of that buffer.
+ */
+typedef struct aprend_vertex_binding_desc {
+	/**
+	 * The attributes, with their offsets inside one element of the buffer.
+	 * Never empty. The buffer's stride is the end of the furthest element
+	 * (aprend_buffer_layout_get_total_size()). The `elements` array is not
+	 * copied: it must outlive the pipeline for
+	 * aprend_graphics_pipeline_get_desc() to return it.
+	 */
+	aprend_buffer_layout _layout;
+	/**
+	 * false to step once per vertex, true to step once per instance: every
+	 * vertex of one instance reads the same element, and the element is
+	 * chosen by the instance index (APREND_COMMAND_DRAW_INSTANCED and
+	 * APREND_COMMAND_DRAW_INSTANCED_INDEXED, from `_start_instance_location`).
+	 */
+	bool _per_instance;
+} aprend_vertex_binding_desc;
+
+/**
  * @brief Configuration descriptor for a graphics pipeline.
  *
- * No field has a default. The shader entry points are not fields: both are
- * `main`.
+ * No field has a default.
  */
 typedef struct aprend_graphics_pipeline_desc {
 #ifdef _DEBUG
@@ -169,13 +196,21 @@ typedef struct aprend_graphics_pipeline_desc {
 	const char *_debug_name;
 #endif
 	/**
-	 * The vertex attributes, read from one vertex buffer, per vertex.
-	 * Element N is `layout(location = N)` in the vertex shader. At most
-	 * SPUDGPU_MAX_VERTEX_ATTRIBUTES elements; a count of 0 is a pipeline with
-	 * no vertex input. The `elements` array is not copied: it must outlive
-	 * the pipeline for aprend_graphics_pipeline_get_desc() to return it.
+	 * The vertex input: `_vertex_bindings[N]` is read from the vertex buffer
+	 * at slot N (APREND_COMMAND_SET_VERTEX_BUFFERS). The first
+	 * #_vertex_binding_count entries are read; the rest are ignored.
+	 *
+	 * Shader locations are numbered through the bindings in order: binding
+	 * 0's elements are `layout(location = 0)` onwards, binding 1's follow
+	 * on from where binding 0's end, and so on. At most
+	 * SPUDGPU_MAX_VERTEX_ATTRIBUTES elements in all.
 	 */
-    aprend_buffer_layout _vertex_layout;
+	aprend_vertex_binding_desc _vertex_bindings[APREND_MAX_VERTEX_BINDINGS];
+	/**
+	 * How many vertex buffer slots the pipeline reads. At most
+	 * APREND_MAX_VERTEX_BINDINGS; 0 is a pipeline with no vertex input.
+	 */
+	uint32_t _vertex_binding_count;
 	/** What the vertices are assembled into. */
     SPUDGPU_PRIMITIVE_TOPOLOGY _topology;
 	/**
@@ -202,10 +237,11 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * refused.
 	 */
 	SPUDGPU_COMPARE_OP _depth_compare_op;
-	/** Draws triangles as their edges instead of filled. */
+	/**
+	 * Draws triangles as their edges instead of filled. Lines, of a wireframe
+	 * or a line topology, are one pixel wide: there is no line width.
+	 */
 	bool _wireframe;
-	/** Not read yet: lines are as wide as the backend rasterizes them. */
-	float _line_width;
 	/**
 	 * How this pipeline's output combines with what the color target
 	 * already holds. Zeroed (`blend_enable` false) writes it as is. The
@@ -221,6 +257,14 @@ typedef struct aprend_graphics_pipeline_desc {
 	aprend_shader vertex_shader;
 	/** The fragment stage. Required. */
 	aprend_shader fragment_shader;
+	/**
+	 * Name of the function #vertex_shader starts at, `main` for GLSL.
+	 * Required, and not an empty string. Copied: the pointer only has to
+	 * live for aprend_graphics_pipeline_create().
+	 */
+	const char *_vertex_entry_point;
+	/** The same for #fragment_shader. */
+	const char *_fragment_entry_point;
 
 	/** Pixel format of the color render target this pipeline writes to. */
 	SPUDGPU_FORMAT color_attachment_format;
@@ -241,6 +285,20 @@ typedef struct aprend_graphics_pipeline_desc {
 	aprend_binding_layout _binding_layouts[APREND_MAX_BINDING_LAYOUTS];
 	/** How many set slots are declared. At most APREND_MAX_BINDING_LAYOUTS. */
 	uint32_t _binding_layout_count;
+
+	/**
+	 * The byte ranges of the shaders' push constant block and the stages
+	 * that read each (`layout(push_constant)` in GLSL). The first
+	 * #_push_constant_range_count entries are read. Each needs at least one
+	 * stage, a size that is not 0, and an offset and size that are multiples
+	 * of 4. The bytes are written with APREND_COMMAND_PUSH_CONSTANTS.
+	 */
+	spudgpu_push_constant_range_desc _push_constant_ranges[APREND_MAX_PUSH_CONSTANT_RANGES];
+	/**
+	 * How many ranges are declared. At most APREND_MAX_PUSH_CONSTANT_RANGES;
+	 * 0 is a pipeline with no push constants.
+	 */
+	uint32_t _push_constant_range_count;
 } aprend_graphics_pipeline_desc;
 
 /**
@@ -288,8 +346,14 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  * @param[in] desc     Pipeline configuration, taken by value.
  *
  * @return The pipeline, or NULL if @p instance is NULL, either shader is NULL,
- *         the vertex layout has more than SPUDGPU_MAX_VERTEX_ATTRIBUTES
- *         elements, `_cull_mode` is not a SPUDGPU_CULL_MODE, `_depth_test` is
+ *         either entry point is NULL or an empty string,
+ *         `_vertex_binding_count` is above APREND_MAX_VERTEX_BINDINGS, a
+ *         counted vertex binding has no elements or a stride of 0, the
+ *         bindings hold more than SPUDGPU_MAX_VERTEX_ATTRIBUTES elements in
+ *         all, `_push_constant_range_count` is above
+ *         APREND_MAX_PUSH_CONSTANT_RANGES, a counted push constant range has
+ *         no stages, a size of 0, or an offset or size that is not a
+ *         multiple of 4, `_cull_mode` is not a SPUDGPU_CULL_MODE, `_depth_test` is
  *         set with `_depth_compare_op` SPUDGPU_COMPARE_OP_NEVER,
  *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
  *         counted entry of `_binding_layouts` is NULL or belongs to another
@@ -316,8 +380,9 @@ void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p);
  * @param[in] p Pipeline to read.
  *
  * @return The descriptor as it was passed to
- *         aprend_graphics_pipeline_create(), pointers included; zeroed if
- *         @p p is NULL.
+ *         aprend_graphics_pipeline_create(), pointers included, except that
+ *         the two entry point names are the pipeline's own copies and are
+ *         valid until it is destroyed; zeroed if @p p is NULL.
  */
 aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p);
 
@@ -360,27 +425,35 @@ typedef struct aprend_binding_set_entry {
 	union {
 		/** For SPUDGPU_DESCRIPTOR_TYPE_UNIFORM_BUFFER. */
 		struct {
-			/** The buffer. Required. */
+			/** A single buffer. Exactly one of this and `_set` is given. */
 			aprend_uniform_buffer _buffer;
-			/** First byte of `_buffer` the slot sees. Inside the buffer. */
+			/** First byte of the buffer the slot sees. Inside the buffer. */
 			uint64_t _offset;
 			/**
 			 * How many bytes the slot sees, from `_offset`. 0 is to the end
 			 * of the buffer.
 			 */
 			uint64_t _range;
+			/**
+			 * A buffer set (aprendbuffers.h), in place of `_buffer`: the
+			 * slot sees the copy of the frame a command list is compiled
+			 * in. `_offset` and `_range` apply to every copy.
+			 */
+			aprend_uniform_buffer_set _set;
 		} _uniform;
 		/** For SPUDGPU_DESCRIPTOR_TYPE_STORAGE_BUFFER. */
 		struct {
-			/** The buffer. Required. */
+			/** A single buffer. Exactly one of this and `_set` is given. */
 			aprend_storage_buffer _buffer;
-			/** First byte of `_buffer` the slot sees. Inside the buffer. */
+			/** First byte of the buffer the slot sees. Inside the buffer. */
 			uint64_t _offset;
 			/**
 			 * How many bytes the slot sees, from `_offset`. 0 is to the end
 			 * of the buffer.
 			 */
 			uint64_t _range;
+			/** A buffer set in place of `_buffer`, as `_uniform._set`. */
+			aprend_storage_buffer_set _set;
 		} _storage;
 		/** For the image and sampler types. */
 		struct {
@@ -407,6 +480,12 @@ typedef struct aprend_binding_set_entry {
  * A layout's sets share descriptor pools the layout owns, and a destroyed
  * set's place is reused by the next one created.
  *
+ * A set with a buffer set in any entry keeps one descriptor set for each
+ * frame in flight, and a command list binds the one of the frame it is
+ * compiled in: such a list is submitted in that frame, and compiled again in
+ * the next (aprend_command_list_submit() refuses it otherwise). A set of
+ * single buffers, textures and samplers alone has no such limit.
+ *
  * @note Creating and destroying sets of the same layout from two threads at
  * once is not safe. Sets of different layouts are independent.
  *
@@ -417,8 +496,9 @@ typedef struct aprend_binding_set_entry {
  *
  * @return The set, or NULL if @p layout or @p entries is NULL, the entries
  *         don't fill the layout exactly, an entry's `_type` is not the
- *         layout's, a handle its `_type` reads is NULL, a view is of the wrong
- *         type for its slot, a buffer's `_offset` and `_range` run past its
+ *         layout's, a handle its `_type` reads is NULL, a buffer entry gives
+ *         both `_buffer` and `_set` or a `_set` of another instance, a view
+ *         is of the wrong type for its slot, a buffer's `_offset` and `_range` run past its
  *         end, or the set can't be allocated.
  *
  * @see aprend_binding_set_destroy()

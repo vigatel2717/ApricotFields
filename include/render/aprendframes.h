@@ -31,8 +31,6 @@ typedef struct aprend_framebuffer_desc {
 	SPUDGPU_FORMAT depth_format;
 	// Sample count.
 	uint32_t sample_count;
-	// True if used for swap chain, false otherwise.
-	bool swap_chain_target;
 } aprend_framebuffer_desc;
 
 typedef struct aprend_framebuffer_t *aprend_framebuffer;
@@ -48,18 +46,20 @@ bool aprend_framebuffer_resize(
     uint32_t width,
     uint32_t height);
 /* aprend_framebuffer_clear_colors and aprend_framebuffer_clear_depth run at
- * once and block until the GPU has finished, under the same rules as
- * aprend_texture2d_update (aprendimages.h): submissions using the attachments
+ * once on [queue], which is never NULL, and block until they have run, under the
+ * same rules as aprend_texture2d_update (aprendimages.h): submissions using the attachments
  * must have completed, and the attachments are left in the image layout they
  * were found in. */
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
+    spudgpu_command_queue queue,
     float r,
     float g,
     float b,
     float a);
 bool aprend_framebuffer_clear_depth(
     aprend_framebuffer framebuffer,
+    spudgpu_command_queue queue,
     bool clear_depth,
     bool clear_stencil,
     float depth,
