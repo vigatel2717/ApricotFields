@@ -63,6 +63,14 @@ inline ApriMat4 from_glm(const glm::mat4 &m) {
 #define APREND_CONSTRUCT__T(var, T) var = new (var) T()
 #define APREND_DESTRUCT__T(var, T) var->~T(); free(var)
 
+/* Binding sets per descriptor pool of a binding layout. Sets are small and a
+ * layout with more than a handful is rare, so this is sized to make a second
+ * pool unusual without reserving much for a layout that has one set. */
+#define APREND_BINDING_SETS_PER_POOL 32
+
+/* How many SPUDGPU_DESCRIPTOR_TYPE values there are; they are 0 to this - 1. */
+#define APREND_DESCRIPTOR_TYPE_COUNT (SPUDGPU_DESCRIPTOR_TYPE_STORAGE_IMAGE + 1)
+
 typedef struct aprend_instance_t {
 #if _DEBUG
 	char *debug_name{nullptr};
@@ -88,17 +96,24 @@ typedef struct aprend_command_list_t {
 	 * commands never point at caller memory. Each inner vector's buffer stays
 	 * put when the outer vector grows (moves don't reallocate it). */
 	std::vector<std::vector<aprend_color_target>> color_target_storage{};
+	/* The same for the arrays of SET_VERTEX_BUFFERS, SET_VIEWPORTS and
+	 * SET_SCISSOR_RECTS. */
+	std::vector<std::vector<aprend_vertex_buffer>> vertex_buffer_storage{};
+	std::vector<std::vector<SPUDGPU_VIEWPORT>> viewport_storage{};
+	std::vector<std::vector<SPUDGPU_SCISSOR_RECT>> scissor_rect_storage{};
 	/* Set by aprend_send_command on a malformed command; fails compile until reset. */
 	bool recording_error{false};
 
 	/* Per-texture layout transitions of the last compile. Compiling never
-	 * touches aprend_texture2d_t::current_layout (the layout the GPU will see
+	 * touches a texture's current_layout (the layout the GPU will see
 	 * once everything submitted so far has run) - only a successful
 	 * aprend_command_list_submit commits final_layout to it. initial_layout is
 	 * what this list's first barrier assumes, checked against current_layout
 	 * at submit. */
 	struct layout_use {
-		aprend_texture2d texture;
+		spudgpu_image image;
+		/* The texture's current_layout (2D or 3D). */
+		SPUDGPU_IMAGE_LAYOUT *tracked;
 		SPUDGPU_IMAGE_LAYOUT initial_layout;
 		SPUDGPU_IMAGE_LAYOUT final_layout;
 	};
@@ -201,21 +216,52 @@ typedef struct aprend_graphics_pipeline_t {
 	aprend_graphics_pipeline_desc desc{};
 	aprend_instance instance{nullptr};
 	spudgpu_shader_pipeline pipeline{nullptr};
-	/* Descriptor set 0's layout, built from desc._uniform_bindings; nullptr
-	 * when the pipeline declares none. */
-	spudgpu_descriptor_set_layout uniform_layout{nullptr};
 } aprend_graphics_pipeline_t;
 
-typedef struct aprend_uniform_set_t {
+typedef struct aprend_binding_layout_t {
 #if _DEBUG
 	char *debug_name{nullptr};
 #endif
-	aprend_uniform_set_t() = default;
-	~aprend_uniform_set_t();
-	aprend_graphics_pipeline pipeline{nullptr};
-	/* Own pool, sized for exactly this one set; destroying it frees the set. */
-	spudgpu_descriptor_pool pool{nullptr};
+	aprend_binding_layout_t() = default;
+	~aprend_binding_layout_t();
+	aprend_instance instance{nullptr};
+	aprend_binding_desc bindings[APREND_MAX_BINDINGS_PER_LAYOUT]{};
+	uint32_t binding_count{0};
+	/* Every binding's _count added up: the entries one set takes. */
+	uint32_t descriptor_count{0};
+	spudgpu_descriptor_set_layout layout{nullptr};
+	/* The pools this layout's sets come from, each sized for
+	 * APREND_BINDING_SETS_PER_POOL sets. A pool is added when the last one is
+	 * full; none is released before the layout. */
+	spudgpu_descriptor_pool *pools{nullptr};
+	uint32_t pool_count{0};
+	/* Sets allocated so far from the last pool. */
+	uint32_t sets_in_last_pool{0};
+	/* Sets whose aprend_binding_set was destroyed, handed out again before
+	 * anything new is allocated: SpudGPU releases sets by the pool, not one
+	 * at a time. Always has room for every set of every pool. */
+	spudgpu_descriptor_set *free_sets{nullptr};
+	uint32_t free_set_count{0};
+} aprend_binding_layout_t;
+
+typedef struct aprend_binding_set_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_binding_set_t() = default;
+	~aprend_binding_set_t();
+	aprend_binding_layout layout{nullptr};
+	/* From one of the layout's pools; goes back on its free list. */
 	spudgpu_descriptor_set set{nullptr};
-} aprend_uniform_set_t;
+	/* Every texture view the set holds and the layout its slot reads the
+	 * texture in, for a command list to move the texture there before a pass
+	 * that binds the set. */
+	struct image_use {
+		aprend_texture_view view;
+		SPUDGPU_IMAGE_LAYOUT layout;
+	};
+	image_use *image_uses{nullptr};
+	uint32_t image_use_count{0};
+} aprend_binding_set_t;
 
 #endif // APREND_INTERNAL_HPP

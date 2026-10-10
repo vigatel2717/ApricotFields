@@ -64,11 +64,33 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 		return NULL;
 
     SPUDRESULT sr = SPUD_SUCCESS;
-	result->layout.uniforms = (aprend_uniform *)malloc(sizeof(aprend_uniform) * layout->count);
-	if (!result->layout.uniforms)
-		goto failedattempt;
-	result->layout.count = layout->count;
-	memcpy(result->layout.uniforms, layout->uniforms, sizeof(aprend_uniform) * layout->count);
+	{
+		// One block: the uniforms, then a copy of each name, so
+		// aprend_uniform_buffer_update_by_name never reads a string the caller
+		// has since released. The destructor frees it in one go.
+		size_t name_bytes = 0;
+		for (uint32_t i = 0; i < layout->count; ++i)
+			if (layout->uniforms[i].name)
+				name_bytes += strlen(layout->uniforms[i].name) + 1;
+		const size_t uniform_bytes = sizeof(aprend_uniform) * layout->count;
+
+		result->layout.uniforms = (aprend_uniform *)malloc(uniform_bytes + name_bytes);
+		if (!result->layout.uniforms)
+			goto failedattempt;
+		result->layout.count = layout->count;
+		memcpy(result->layout.uniforms, layout->uniforms, uniform_bytes);
+
+		char *names = (char *)result->layout.uniforms + uniform_bytes;
+		for (uint32_t i = 0; i < layout->count; ++i) {
+			const char *name = layout->uniforms[i].name;
+			if (!name)
+				continue;
+			const size_t length = strlen(name) + 1;
+			memcpy(names, name, length);
+			result->layout.uniforms[i].name = names;
+			names += length;
+		}
+	}
 	result->total_size = 0;
 	for (size_t i = 0; i < layout->count; ++i) {
 		const aprend_uniform &u = layout->uniforms[i];
@@ -126,7 +148,56 @@ bool aprend_uniform_buffer_update(aprend_uniform_buffer buffer, uint32_t local_o
 	return true;
 }
 bool aprend_uniform_buffer_update_by_name(aprend_uniform_buffer buffer, const char *name, void *pData) {
-	return false; // Not implemented yet
+	if (!buffer)
+		return false;
+	if (!name)
+		return false;
+	if (!pData)
+		return false;
+	for (uint32_t i = 0; i < buffer->layout.count; ++i) {
+		const aprend_uniform &u = buffer->layout.uniforms[i];
+		if (!u.name || strcmp(u.name, name) != 0)
+			continue;
+		uint32_t element_count = u.size ? u.size : 1; // u.size is an array element count; 0 means "not an array"
+		// Bounds are aprend_uniform_buffer_update's to check: a layout whose
+		// offsets run past the buffer fails there.
+		return aprend_uniform_buffer_update(buffer, u.offset, aprend_uniform_type_get_size(u.type) * element_count, pData);
+	}
+	return false; // no uniform of that name
+}
+
+uint32_t aprend_buffer_element_type_get_size(APREND_BUFFER_ELEMENT_TYPE type) {
+	switch (type) {
+	case APREND_BUFFER_ELEMENT_TYPE_FLOAT:
+	case APREND_BUFFER_ELEMENT_TYPE_INT:
+		return 4;
+	case APREND_BUFFER_ELEMENT_TYPE_VEC2:
+	case APREND_BUFFER_ELEMENT_TYPE_INT2:
+		return 8;
+	case APREND_BUFFER_ELEMENT_TYPE_VEC3:
+	case APREND_BUFFER_ELEMENT_TYPE_INT3:
+		return 12;
+	case APREND_BUFFER_ELEMENT_TYPE_VEC4:
+	case APREND_BUFFER_ELEMENT_TYPE_INT4:
+		return 16;
+	default:
+		return 0;
+	}
+}
+
+uint32_t aprend_buffer_layout_get_element_index(const aprend_buffer_layout *layout, const char *name) {
+	if (!layout)
+		return UINT32_MAX;
+	if (!layout->elements)
+		return UINT32_MAX;
+	if (!name)
+		return UINT32_MAX;
+	for (uint32_t i = 0; i < layout->count; ++i) {
+		const char *element_name = layout->elements[i].name;
+		if (element_name && strcmp(element_name, name) == 0)
+			return i;
+	}
+	return UINT32_MAX;
 }
 
 uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout) {
@@ -304,11 +375,13 @@ bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offse
 	spudgpu_unmap_buffer(buffer->buffer);
 	return true;
 }
-APREND_INDEX_STRIDE aprend_index_buffer_get_format(aprend_index_buffer buffer) { return buffer ? buffer->index_stride : APREND_INDEX_STRIDE_NONE; }
+APREND_INDEX_STRIDE aprend_index_buffer_get_stride(aprend_index_buffer buffer) { return buffer ? buffer->index_stride : APREND_INDEX_STRIDE_NONE; }
 uint32_t aprend_index_buffer_get_index_count(aprend_index_buffer buffer) { return buffer ? buffer->index_count : 0; }
 
 aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uint64_t size, void *pData) {
-	if (!instance || size == 0)
+	if (!instance)
+		return nullptr;
+	if (size == 0)
 		return nullptr;
 	aprend_storage_buffer_t *result = (aprend_storage_buffer_t *)malloc(sizeof(aprend_storage_buffer_t));
 	if (result)
@@ -316,14 +389,23 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 	else
 		return nullptr;
 
+	result->size = size;
+
+	SPUDRESULT sr = SPUD_SUCCESS;
 	{
 		spudgpu_buffer_desc bd{};
 		bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
 		bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
-		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
+		// Host-visible, because this buffer is written by map and copy (here and
+		// in aprend_storage_buffer_update) and spudgpu_map_buffer refuses any
+		// buffer created without it. Not device-local as well: memory that is
+		// both isn't something every device has, and host-visible, host-coherent
+		// memory is.
+		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT;
 		bd.size         = size;
 		bd.usage        = SPUDGPU_BUFFER_USAGE_STORAGE;
-		if (SPUDFAIL(spudgpu_create_buffer(instance->desc.device, &bd, &result->buffer)))
+		sr = spudgpu_create_buffer(instance->desc.device, &bd, &result->buffer);
+		if (sr != SPUD_SUCCESS)
 			goto failedattempt;
 
 		result->buffer_view_desc.parent_buffer = result->buffer;
@@ -331,12 +413,14 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 		    0; // This will be set to the correct offset in the buffer when the buffer is allocated and assigned a GPU address.
 		result->buffer_view_desc.stride = 0;
 		result->buffer_view_desc.size   = size;
-		if (SPUDFAIL(spudgpu_create_buffer_view(result->buffer, &result->buffer_view_desc, &result->buffer_view)))
+		sr = spudgpu_create_buffer_view(result->buffer, &result->buffer_view_desc, &result->buffer_view);
+		if (sr != SPUD_SUCCESS)
 			goto failedattempt;
 
 		if (pData) {
 			void *data_ptr = nullptr;
-			if (SPUDFAIL(spudgpu_map_buffer(result->buffer, result->buffer_view_desc.offset_from_parent_buffer, result->buffer_view_desc.size, &data_ptr)))
+			sr = spudgpu_map_buffer(result->buffer, result->buffer_view_desc.offset_from_parent_buffer, result->buffer_view_desc.size, &data_ptr);
+			if (sr != SPUD_SUCCESS)
 				goto failedattempt;
 
 			memcpy(data_ptr, pData, size);
@@ -346,6 +430,7 @@ aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uin
 
 	return result;
 failedattempt:
+	printf("%s", spudresult_str(sr));
 	result->~aprend_storage_buffer_t();
 	free(result);
 	return nullptr;
@@ -357,7 +442,15 @@ void aprend_storage_buffer_destroy(aprend_storage_buffer buffer) {
 	}
 }
 bool aprend_storage_buffer_update(aprend_storage_buffer buffer, uint64_t local_offset, uint64_t size, void *pData) {
-	if (!buffer || size == 0 || !pData)
+	if (!buffer)
+		return false;
+	if (size == 0)
+		return false;
+	if (!pData)
+		return false;
+	if (local_offset > buffer->size)
+		return false;
+	if (size > buffer->size - local_offset)
 		return false;
 	uint64_t byte_offset = buffer->buffer_view_desc.offset_from_parent_buffer + local_offset;
 	void *data_ptr       = nullptr;

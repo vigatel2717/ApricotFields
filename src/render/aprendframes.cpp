@@ -164,15 +164,28 @@ bool aprend_framebuffer_clear_colors(
 	if (framebuffer->color_attachments.empty())
 		return true; // Nothing to clear.
 
-	return aprend_submit_immediate(framebuffer->instance, [&](spudgpu_command_list cmd) {
+	// Each attachment goes back to the layout it was found in (see
+	// aprend_immediate_final_layout), and the tracked layouts are only
+	// written once the one submission covering all of them has succeeded.
+	const SPUDGPU_IMAGE_LAYOUT working = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	bool ok                            = aprend_submit_immediate(framebuffer->instance, [&](spudgpu_command_list cmd) {
 		for (aprend_texture_view view : framebuffer->color_attachments) {
-			aprend_texture2d attachment = view->texture._t2d;
-			spudgpu_cmd_image_barrier(cmd, attachment->image, attachment->current_layout, SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+			aprend_texture2d attachment             = view->texture._t2d;
+			const SPUDGPU_IMAGE_LAYOUT final_layout = aprend_immediate_final_layout(attachment->current_layout, working);
+			spudgpu_cmd_image_barrier(cmd, attachment->image, attachment->current_layout, working);
 			spudgpu_cmd_clear_color_attachment(
 			    cmd, aprend_texture_view_get_spudgpu_image_view(view), r, g, b, a, attachment->desc.width, attachment->desc.height);
-			attachment->current_layout = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+			if (final_layout != working)
+				spudgpu_cmd_image_barrier(cmd, attachment->image, working, final_layout);
 		}
 	});
+	if (!ok)
+		return false;
+	for (aprend_texture_view view : framebuffer->color_attachments) {
+		aprend_texture2d attachment = view->texture._t2d;
+		attachment->current_layout  = aprend_immediate_final_layout(attachment->current_layout, working);
+	}
+	return true;
 }
 bool aprend_framebuffer_clear_depth(
     aprend_framebuffer framebuffer,
@@ -192,13 +205,13 @@ bool aprend_framebuffer_clear_depth(
 	aprend_texture_view view            = framebuffer->depth_attachment;
 	aprend_texture2d attachment_texture = view->texture._t2d;
 
-	return aprend_submit_immediate(framebuffer->instance, [&](spudgpu_command_list cmd) {
-		spudgpu_cmd_image_barrier(cmd, attachment_texture->image, attachment_texture->current_layout, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
-		spudgpu_cmd_clear_depth_attachment(
-		    cmd, aprend_texture_view_get_spudgpu_image_view(view), clear_depth, clear_stencil, depth, stencil, attachment_texture->desc.width,
-		    attachment_texture->desc.height);
-		attachment_texture->current_layout = SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-	});
+	return aprend_immediate_on_texture(
+	    attachment_texture, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	    [&](spudgpu_command_list cmd) {
+		    spudgpu_cmd_clear_depth_attachment(
+		        cmd, aprend_texture_view_get_spudgpu_image_view(view), clear_depth, clear_stencil, depth, stencil, attachment_texture->desc.width,
+		        attachment_texture->desc.height);
+	    });
 }
 aprend_texture_view aprend_framebuffer_get_color_attachment(
     aprend_framebuffer framebuffer,

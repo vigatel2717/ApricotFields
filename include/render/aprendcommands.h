@@ -12,7 +12,7 @@ extern "C" {
 typedef struct aprend_vertex_buffer_t *aprend_vertex_buffer;
 typedef struct aprend_index_buffer_t *aprend_index_buffer;
 typedef struct aprend_graphics_pipeline_t *aprend_graphics_pipeline;
-typedef struct aprend_uniform_set_t *aprend_uniform_set;
+typedef struct aprend_binding_set_t *aprend_binding_set;
 typedef struct aprend_swap_chain_t *aprend_swap_chain;
 
 /* Upper bound on color targets in one BEGIN_RENDERING pass. */
@@ -48,11 +48,18 @@ enum {
 	 * compiled. aprend_command_list_compile fails on any violation. */
 	APREND_COMMAND_BEGIN_RENDERING        = 10,
 	APREND_COMMAND_END_RENDERING          = 11,
-	/* Binds the uniform buffers of an aprend_uniform_set (aprendpipeline.h)
-	 * for the following draws. The set must belong to the pipeline most
-	 * recently bound with SET_SHADER_PIPELINE, and binding a pipeline unbinds
-	 * any previous set, so send it after SET_SHADER_PIPELINE. */
-	APREND_COMMAND_SET_UNIFORM_SET        = 12,
+	/* Puts an aprend_binding_set (aprendpipeline.h) at set slot _slot for the
+	 * following draws, until another is put there. It stays through
+	 * SET_SHADER_PIPELINE and from one pass to the next, so it may be sent
+	 * before or after the pipeline, inside a pass or outside. At each draw,
+	 * every slot the bound pipeline declares must hold a set created from the
+	 * layout the pipeline declares there.
+	 *
+	 * Before a pass begins, every texture in a set that is in a slot then, or
+	 * is put in one during the pass, is moved into the layout its binding
+	 * reads it in. Such a texture can't also be a target of that pass, nor be
+	 * in a sampled slot and a storage image slot in the same pass. */
+	APREND_COMMAND_SET_BINDING_SET        = 12,
 	/* Copies _source into _swap_chain's acquired back buffer (aprendswapchain.h)
 	 * and leaves it ready to present. Outside any pass; at most one per list.
 	 * Where the sizes differ, only the overlapping top-left region is copied.
@@ -63,6 +70,11 @@ enum {
 typedef struct APREND_COMMAND {
 	APREND_COMMAND_TYPE _type;
 	union {
+		/* Every array a command points at (_vertex_buffers, _viewports,
+		 * _scissor_rects, _color_targets) is copied into the command list by
+		 * aprend_send_command, so the caller's array only has to live for
+		 * that call. What the entries refer to - buffers, views - must stay
+		 * alive until the list's submission has completed. */
 		struct {
 			aprend_vertex_buffer *_vertex_buffers;
 			uint32_t _vertex_buffer_count;
@@ -106,10 +118,6 @@ typedef struct APREND_COMMAND {
 			uint32_t _first_scissor_rect;
 			uint32_t _scissor_rect_count;
 		} _set_scissor_rects;
-		/* _color_targets is copied into the command list by
-		 * aprend_send_command, so the caller's array only has to live for
-		 * that call. The views it points at must stay alive until the
-		 * list's submission has completed. */
 		struct {
 			const aprend_color_target *_color_targets;
 			uint32_t _color_target_count;
@@ -121,8 +129,9 @@ typedef struct APREND_COMMAND {
 			APREND_RENDERING_FLAGS _flags;
 		} _begin_rendering;
 		struct {
-			aprend_uniform_set _uniform_set;
-		} _set_uniform_set;
+			uint32_t _slot;
+			aprend_binding_set _set;
+		} _set_binding_set;
 		struct {
 			aprend_texture2d _source;
 			aprend_swap_chain _swap_chain;
@@ -136,10 +145,11 @@ aprend_command_list aprend_command_list_create(aprend_instance instance);
 void aprend_command_list_destroy(aprend_command_list cmd_list);
 
 void aprend_command_list_reset(aprend_command_list cmd_list);
-/* A malformed BEGIN_RENDERING (more than APREND_MAX_COLOR_TARGETS color
- * targets, or a NULL _color_targets with a nonzero count) isn't recorded and
- * makes the next aprend_command_list_compile fail, until
- * aprend_command_list_reset. */
+/* A malformed command isn't recorded and makes the next
+ * aprend_command_list_compile fail, until aprend_command_list_reset:
+ * a BEGIN_RENDERING with more than APREND_MAX_COLOR_TARGETS color targets;
+ * a NULL array with a nonzero count in BEGIN_RENDERING, SET_VERTEX_BUFFERS,
+ * SET_VIEWPORTS or SET_SCISSOR_RECTS; a NULL entry in _vertex_buffers. */
 void aprend_send_command(
     aprend_command_list cmd_list,
     APREND_COMMAND cmd);
@@ -155,8 +165,10 @@ void aprend_send_command(
  * sent or the pass scope is violated: a draw outside any pass, a nested
  * BEGIN_RENDERING, END_RENDERING with no open BEGIN_RENDERING, or a
  * BEGIN_RENDERING left open at the end of the list. Also fails on a
- * SET_UNIFORM_SET that doesn't belong to the bound pipeline, and on a draw
- * whose pipeline declares uniform bindings with no matching set bound. */
+ * SET_BINDING_SET with a NULL set or a _slot of APREND_MAX_BINDING_LAYOUTS or
+ * more, on a draw whose pipeline declares a set slot that holds no set or a
+ * set of another layout, and on a pass whose binding sets break the texture
+ * rule above (APREND_COMMAND_SET_BINDING_SET). */
 bool aprend_command_list_compile(aprend_command_list cmd_list);
 
 /* Submits the last successful compile on [queue] and commits the image

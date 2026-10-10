@@ -47,6 +47,11 @@ bool aprend_framebuffer_resize(
     aprend_framebuffer framebuffer,
     uint32_t width,
     uint32_t height);
+/* aprend_framebuffer_clear_colors and aprend_framebuffer_clear_depth run at
+ * once and block until the GPU has finished, under the same rules as
+ * aprend_texture2d_update (aprendimages.h): submissions using the attachments
+ * must have completed, and the attachments are left in the image layout they
+ * were found in. */
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
     float r,

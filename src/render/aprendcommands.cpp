@@ -44,6 +44,9 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	cmd_list->commands.clear();
 	cmd_list->commands.reserve(preserve_size);
 	cmd_list->color_target_storage.clear();
+	cmd_list->vertex_buffer_storage.clear();
+	cmd_list->viewport_storage.clear();
+	cmd_list->scissor_rect_storage.clear();
 	cmd_list->recording_error = false;
 	cmd_list->layout_uses.clear();
 	cmd_list->compiled           = false;
@@ -72,34 +75,100 @@ void aprend_send_command(
 		}
 	}
 
+	// The array commands below are copied the same way: the caller's array
+	// only has to live for this call.
+	if (cmd._type == APREND_COMMAND_SET_VERTEX_BUFFERS) {
+		auto &p = cmd._params._set_vertex_buffers;
+		if (p._vertex_buffer_count > 0 && !p._vertex_buffers) {
+			printf("aprend: SET_VERTEX_BUFFERS with a NULL array (count %u)\n", p._vertex_buffer_count);
+			cmd_list->recording_error = true;
+			return;
+		}
+		for (uint32_t i = 0; i < p._vertex_buffer_count; ++i) {
+			if (!p._vertex_buffers[i]) {
+				printf("aprend: SET_VERTEX_BUFFERS vertex buffer %u is NULL\n", i);
+				cmd_list->recording_error = true;
+				return;
+			}
+		}
+		if (p._vertex_buffer_count > 0) {
+			cmd_list->vertex_buffer_storage.emplace_back(p._vertex_buffers, p._vertex_buffers + p._vertex_buffer_count);
+			p._vertex_buffers = cmd_list->vertex_buffer_storage.back().data();
+		} else {
+			p._vertex_buffers = nullptr;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_SET_VIEWPORTS) {
+		auto &p = cmd._params._set_viewports;
+		if (p._viewport_count > 0 && !p._viewports) {
+			printf("aprend: SET_VIEWPORTS with a NULL array (count %u)\n", p._viewport_count);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._viewport_count > 0) {
+			cmd_list->viewport_storage.emplace_back(p._viewports, p._viewports + p._viewport_count);
+			p._viewports = cmd_list->viewport_storage.back().data();
+		} else {
+			p._viewports = nullptr;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_SET_SCISSOR_RECTS) {
+		auto &p = cmd._params._set_scissor_rects;
+		if (p._scissor_rect_count > 0 && !p._scissor_rects) {
+			printf("aprend: SET_SCISSOR_RECTS with a NULL array (count %u)\n", p._scissor_rect_count);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._scissor_rect_count > 0) {
+			cmd_list->scissor_rect_storage.emplace_back(p._scissor_rects, p._scissor_rects + p._scissor_rect_count);
+			p._scissor_rects = cmd_list->scissor_rect_storage.back().data();
+		} else {
+			p._scissor_rects = nullptr;
+		}
+	}
+
 	cmd_list->commands.emplace_back(cmd);
 }
 
-/* Moves [view]'s texture into [layout]. Issued even when the layout already
- * matches: back-to-back passes on the same attachment (e.g. a LOAD after a
- * previous pass's STORE) still need the barrier's memory dependency. Render
- * targets are always 2D views (see aprend_begin_rendering_valid).
+/* Moves the image whose tracked layout is at [tracked] into [layout]. Unless
+ * [skip_if_same], issued even when the layout already matches: back-to-back
+ * passes on the same attachment (e.g. a LOAD after a previous pass's STORE)
+ * still need the barrier's memory dependency. Two reads in a row don't, which
+ * is what [skip_if_same] is for.
  *
  * Tracks the layout in [cmd_list]'s own layout_uses, never on the texture:
  * the texture's layout only changes once the list is actually submitted. */
-static void aprend_cmd_transition_texture(
+static void aprend_cmd_transition_image(
     aprend_command_list cmd_list,
-    aprend_texture2d tex,
-    SPUDGPU_IMAGE_LAYOUT layout) {
+    spudgpu_image image,
+    SPUDGPU_IMAGE_LAYOUT *tracked,
+    SPUDGPU_IMAGE_LAYOUT layout,
+    bool skip_if_same) {
 	aprend_command_list_t::layout_use *use = nullptr;
 	for (auto &u : cmd_list->layout_uses)
-		if (u.texture == tex)
+		if (u.image == image)
 			use = &u;
 	if (!use) {
 		// First use in this list: start from the layout everything submitted
 		// so far leaves it in.
-		cmd_list->layout_uses.push_back({tex, tex->current_layout, tex->current_layout});
+		cmd_list->layout_uses.push_back({image, tracked, *tracked, *tracked});
 		use = &cmd_list->layout_uses.back();
 	}
 
-	spudgpu_cmd_image_barrier(cmd_list->cmd_list, tex->image, use->final_layout, layout);
+	if (skip_if_same && use->final_layout == layout)
+		return;
+	spudgpu_cmd_image_barrier(cmd_list->cmd_list, image, use->final_layout, layout);
 	use->final_layout = layout;
 }
+static void aprend_cmd_transition_texture(
+    aprend_command_list cmd_list,
+    aprend_texture2d tex,
+    SPUDGPU_IMAGE_LAYOUT layout) {
+	aprend_cmd_transition_image(cmd_list, tex->image, &tex->current_layout, layout, false);
+}
+/* Render targets are always 2D views (see aprend_begin_rendering_valid). */
 static void aprend_cmd_transition_view(
     aprend_command_list cmd_list,
     aprend_texture_view view,
@@ -251,6 +320,118 @@ static void aprend_cmd_begin_rendering(
 	spudgpu_cmd_begin_rendering(cmd, &desc);
 }
 
+/* A texture one pass's binding sets read or write, and the layout that takes. */
+struct aprend_pass_image {
+	spudgpu_image image;
+	SPUDGPU_IMAGE_LAYOUT *tracked;
+	SPUDGPU_IMAGE_LAYOUT layout;
+};
+
+/* Adds [set]'s textures to [images]. False if one is already there in another
+ * layout: sampled through one slot and a storage image through another. */
+static bool aprend_pass_images_add_set(
+    std::vector<aprend_pass_image> &images,
+    aprend_binding_set set) {
+	for (uint32_t i = 0; i < set->image_use_count; ++i) {
+		const auto &use               = set->image_uses[i];
+		SPUDGPU_IMAGE_LAYOUT *tracked = nullptr;
+		spudgpu_image image           = aprend_texture_view_image(use.view, &tracked);
+
+		bool known = false;
+		for (const aprend_pass_image &pass_image : images) {
+			if (pass_image.image != image)
+				continue;
+			if (pass_image.layout != use.layout) {
+				printf("aprend: a texture is in a sampled slot and a storage image slot of the binding sets of one pass\n");
+				return false;
+			}
+			known = true;
+		}
+		if (!known)
+			images.push_back({image, tracked, use.layout});
+	}
+	return true;
+}
+
+/* Before the BEGIN_RENDERING at [begin_index] opens its pass: moves every
+ * texture of the pass's binding sets into the layout its slot reads it in,
+ * since a barrier can't be issued once the pass is open. The pass's sets are
+ * the ones in [slots] now and every SET_BINDING_SET up to its END_RENDERING.
+ * Assumes aprend_begin_rendering_valid passed. */
+static bool aprend_cmd_prepare_pass_images(
+    aprend_command_list cmd_list,
+    size_t begin_index,
+    const aprend_binding_set *slots) {
+	std::vector<aprend_pass_image> images;
+	for (uint32_t slot = 0; slot < APREND_MAX_BINDING_LAYOUTS; ++slot) {
+		if (!slots[slot])
+			continue;
+		if (!aprend_pass_images_add_set(images, slots[slot]))
+			return false;
+	}
+	for (size_t i = begin_index + 1; i < cmd_list->commands.size(); ++i) {
+		const APREND_COMMAND &command = cmd_list->commands[i];
+		if (command._type == APREND_COMMAND_END_RENDERING)
+			break;
+		if (command._type != APREND_COMMAND_SET_BINDING_SET)
+			continue;
+		// A NULL set is refused when the command itself is reached.
+		if (!command._params._set_binding_set._set)
+			continue;
+		if (!aprend_pass_images_add_set(images, command._params._set_binding_set._set))
+			return false;
+	}
+
+	// A texture can't be read through a set and rendered to at once.
+	const auto &p = cmd_list->commands[begin_index]._params._begin_rendering;
+	for (const aprend_pass_image &pass_image : images) {
+		for (uint32_t i = 0; i < p._color_target_count; ++i) {
+			if (p._color_targets[i].view->texture._t2d->image == pass_image.image) {
+				printf("aprend: color target %u of a pass is also in one of the pass's binding sets\n", i);
+				return false;
+			}
+		}
+		if (p._depth_target.view && p._depth_target.view->texture._t2d->image == pass_image.image) {
+			printf("aprend: the depth target of a pass is also in one of the pass's binding sets\n");
+			return false;
+		}
+	}
+
+	for (const aprend_pass_image &pass_image : images) {
+		// Reads after reads need no barrier; a storage image may have been
+		// written, so it always gets one.
+		const bool read_only = pass_image.layout == SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY;
+		aprend_cmd_transition_image(cmd_list, pass_image.image, pass_image.tracked, pass_image.layout, read_only);
+	}
+	return true;
+}
+
+/* Before a draw: binds the set in each slot [pipeline] declares, where it
+ * isn't the one already bound there. False if a slot holds no set, or one of
+ * another layout. */
+static bool aprend_cmd_apply_binding_sets(
+    spudgpu_command_list cmd,
+    aprend_graphics_pipeline pipeline,
+    const aprend_binding_set *slots,
+    aprend_binding_set *applied) {
+	for (uint32_t slot = 0; slot < pipeline->desc._binding_layout_count; ++slot) {
+		aprend_binding_set set = slots[slot];
+		if (!set) {
+			printf("aprend: draw with a pipeline that declares set %u, but no SET_BINDING_SET has put a set there\n", slot);
+			return false;
+		}
+		if (set->layout != pipeline->desc._binding_layouts[slot]) {
+			printf("aprend: draw with a set at slot %u that isn't of the layout the pipeline declares there\n", slot);
+			return false;
+		}
+		if (applied[slot] == set)
+			continue;
+		spudgpu_cmd_bind_descriptor_sets(cmd, pipeline->pipeline, slot, &set->set, 1);
+		applied[slot] = set;
+	}
+	return true;
+}
+
 bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	if (!cmd_list)
 		return false;
@@ -268,13 +449,18 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	/* Whether a BEGIN_RENDERING pass is currently open. */
 	bool in_pass = false;
 	bool ok      = true;
-	/* The pipeline most recently bound, and the uniform set bound since then. */
+	/* The pipeline most recently bound. */
 	aprend_graphics_pipeline bound_pipeline = nullptr;
-	aprend_uniform_set bound_uniform_set    = nullptr;
+	/* The set SET_BINDING_SET last put in each slot, and the one actually
+	 * bound there for the bound pipeline in the open pass. A draw binds
+	 * whatever differs. */
+	aprend_binding_set slot_sets[APREND_MAX_BINDING_LAYOUTS]{};
+	aprend_binding_set applied_sets[APREND_MAX_BINDING_LAYOUTS]{};
 
 	std::vector<spudgpu_buffer_view> vertex_buffer_views;
 
-	for (const APREND_COMMAND &command : cmd_list->commands) {
+	for (size_t command_index = 0; command_index < cmd_list->commands.size(); ++command_index) {
+		const APREND_COMMAND &command = cmd_list->commands[command_index];
 		switch (command._type) {
 		case APREND_COMMAND_DRAW:
 		case APREND_COMMAND_DRAW_INDEXED:
@@ -283,9 +469,8 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			if (!in_pass) {
 				printf("aprend: draw command recorded outside a rendering pass\n");
 				ok = false;
-			} else if (bound_pipeline && bound_pipeline->uniform_layout && !bound_uniform_set) {
-				printf("aprend: draw with a pipeline that declares uniform bindings, but no SET_UNIFORM_SET since binding it\n");
-				ok = false;
+			} else if (bound_pipeline) {
+				ok = aprend_cmd_apply_binding_sets(cmd, bound_pipeline, slot_sets, applied_sets);
 			}
 			break;
 		default:
@@ -317,19 +502,26 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				break;
 			}
 			spudgpu_cmd_bind_pipeline(cmd, p._pipeline->pipeline);
-			bound_pipeline    = p._pipeline;
-			bound_uniform_set = nullptr; // not guaranteed to survive a pipeline change on every backend
+			bound_pipeline = p._pipeline;
+			// Not guaranteed to survive a pipeline change on every backend:
+			// the next draw binds them again.
+			for (aprend_binding_set &applied : applied_sets)
+				applied = nullptr;
 			break;
 		}
-		case APREND_COMMAND_SET_UNIFORM_SET: {
-			aprend_uniform_set set = command._params._set_uniform_set._uniform_set;
-			if (!set || !bound_pipeline || set->pipeline != bound_pipeline) {
-				printf("aprend: SET_UNIFORM_SET with a set that doesn't belong to the bound pipeline\n");
+		case APREND_COMMAND_SET_BINDING_SET: {
+			const auto &p = command._params._set_binding_set;
+			if (!p._set) {
+				printf("aprend: SET_BINDING_SET with a NULL set\n");
 				ok = false;
 				break;
 			}
-			spudgpu_cmd_bind_descriptor_sets(cmd, bound_pipeline->pipeline, 0, &set->set, 1);
-			bound_uniform_set = set;
+			if (p._slot >= APREND_MAX_BINDING_LAYOUTS) {
+				printf("aprend: SET_BINDING_SET with _slot %u, at or above APREND_MAX_BINDING_LAYOUTS\n", p._slot);
+				ok = false;
+				break;
+			}
+			slot_sets[p._slot] = p._set;
 			break;
 		}
 		case APREND_COMMAND_PRESENT_TEXTURE: {
@@ -383,8 +575,15 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				ok = false;
 				break;
 			}
+			if (!aprend_cmd_prepare_pass_images(cmd_list, command_index, slot_sets)) {
+				ok = false;
+				break;
+			}
 			aprend_cmd_begin_rendering(cmd_list, command);
 			in_pass = true;
+			// Nor to carry over from one pass to the next.
+			for (aprend_binding_set &applied : applied_sets)
+				applied = nullptr;
 			break;
 		}
 		case APREND_COMMAND_END_RENDERING: {
@@ -434,7 +633,7 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 	// compiled against; if another submission moved it since, the barriers
 	// would lie to the GPU.
 	for (const auto &use : cmd_list->layout_uses) {
-		if (use.texture->current_layout != use.initial_layout) {
+		if (*use.tracked != use.initial_layout) {
 			printf("aprend: submit refused: a texture's layout changed since this list was compiled; recompile it\n");
 			return false;
 		}
@@ -465,7 +664,7 @@ bool aprend_command_list_submit(aprend_command_list cmd_list, spudgpu_command_qu
 	}
 
 	for (const auto &use : cmd_list->layout_uses)
-		use.texture->current_layout = use.final_layout;
+		*use.tracked = use.final_layout;
 	return true;
 }
 }
