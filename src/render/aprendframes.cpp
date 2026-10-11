@@ -28,7 +28,6 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 			tex_desc.mip_levels   = 1; // attachments are single-mip; nothing generates a chain for them
 			tex_desc.array_layers = 1;
 			tex_desc.sample_count = desc.sample_count ? desc.sample_count : 1;
-			tex_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
 
 			texture = aprend_texture2d_create(framebuffer->instance, &tex_desc);
 			if (!texture)
@@ -55,7 +54,6 @@ static bool aprend_framebuffer_create_attachments(aprend_framebuffer_t *framebuf
 		depth_desc.mip_levels   = 1;
 		depth_desc.array_layers = 1;
 		depth_desc.sample_count = desc.sample_count ? desc.sample_count : 1;
-		depth_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
 
 		aprend_texture2d depth_texture = aprend_texture2d_create(framebuffer->instance, &depth_desc);
 		if (!depth_texture)
@@ -171,7 +169,7 @@ bool aprend_framebuffer_clear_colors(
 	// aprend_immediate_final_layout), and the tracked layouts are only
 	// written once the one submission covering all of them has succeeded.
 	const SPUDGPU_IMAGE_LAYOUT working = SPUDGPU_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-	bool ok                            = aprend_submit_immediate(framebuffer->instance, queue, [&](spudgpu_command_list cmd) {
+	bool ok                            = aprend_submit_immediate(framebuffer->instance, queue, false, [&](spudgpu_command_list cmd) {
 		for (aprend_texture_view view : framebuffer->color_attachments) {
 			aprend_texture2d attachment             = view->texture._t2d;
 			const SPUDGPU_IMAGE_LAYOUT final_layout = aprend_immediate_final_layout(attachment->current_layout, working);
@@ -212,7 +210,7 @@ bool aprend_framebuffer_clear_depth(
 	aprend_texture2d attachment_texture = view->texture._t2d;
 
 	return aprend_immediate_on_texture(
-	    attachment_texture, queue, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	    attachment_texture, queue, false, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, SPUDGPU_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
 	    [&](spudgpu_command_list cmd) {
 		    spudgpu_cmd_clear_depth_attachment(
 		        cmd, aprend_texture_view_get_spudgpu_image_view(view), clear_depth, clear_stencil, depth, stencil, attachment_texture->desc.width,

@@ -13,6 +13,11 @@
  *   -> aprend_command_list_submit (on the swap chain's queue)
  *   -> aprend_swap_chain_present
  * Each step fails (returns false) when called out of that order.
+ *
+ * Threads: the rule is in aprendcontext.h ("Threads"). A swap chain is used
+ * by one thread at a time with everything else of its instance: acquire,
+ * the submission and present are steps of one thread's frame. Its resize
+ * and destroy block that thread until the swap chain's queue is idle.
  ****************************************************/
 
 #if __cplusplus

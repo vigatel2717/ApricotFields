@@ -8,6 +8,15 @@
  * @file aprendimages.h
  * @brief Textures, the views a pass or a binding set uses them through, and
  * samplers, over SpudGPU images.
+ *
+ * @par Threads
+ * The rule is in aprendcontext.h ("Threads"). A texture, a view and a sampler
+ * are each used by one thread at a time with everything else of their
+ * instance. A texture's update, readback and resize calls submit work and
+ * write the image layout Aprend tracks for it, which
+ * aprend_command_list_compile() reads and aprend_command_list_submit()
+ * writes, so none of them runs while another thread compiles or submits a
+ * list that uses the texture. A readback blocks its thread.
  */
 
 #if __cplusplus
@@ -58,9 +67,6 @@ typedef struct aprend_texture2d_desc {
 	/** 1 for no MSAA. More than 1 is refused: MSAA is not supported yet. */
 	uint32_t sample_count;
 
-	/** The memory the image is allocated in. */
-	SPUDGPU_MEMORY_FLAGS memory_flags;
-
 #if _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
@@ -94,7 +100,9 @@ aprend_texture2d aprend_texture2d_create(
  * @brief Destroys a 2D texture.
  *
  * @warning Every aprend_texture_view made from @p texture must be destroyed
- * first, and every submission that uses it must have finished.
+ * first, and no later submission may use it. A submission
+ * already made that uses it is safe: the GPU's side of it is released when
+ * that work has finished (aprendcontext.h, "Destroying").
  *
  * @param[in] texture Texture to destroy. NULL is accepted and does nothing.
  */
@@ -126,10 +134,12 @@ spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture);
  * @brief Writes a region of one mip level of one array layer of a 2D
  * texture.
  *
- * Runs at once, on @p queue, and blocks until the copy has run. It is one of
- * the instance's submissions, so @p queue is the queue the instance's
- * command lists are submitted on. Every
- * submission that uses the texture must have completed first.
+ * Submitted at once, on @p queue, and not waited for: the call returns when
+ * the copy is submitted, and the copy runs after everything submitted before
+ * it and ahead of everything submitted after. @p ppData is read during the
+ * call and may be released when it returns. It is one of the instance's
+ * submissions, so @p queue is the instance's one queue (aprendcontext.h): the
+ * call fails if the instance has already submitted on another.
  *
  * The texture is left in the image layout it was found in, so a command list
  * already compiled against it can still be submitted. The exception is a
@@ -170,8 +180,10 @@ bool aprend_texture2d_update(
  * @brief Reads back a region of one mip level of one array layer of a 2D
  * texture.
  *
- * Runs and blocks as aprend_texture2d_update(), and leaves the texture's
- * image layout the same way.
+ * Submitted at once on @p queue, as aprend_texture2d_update(), and unlike it
+ * waited for: the call blocks until the copy has run and everything
+ * submitted before it has finished, since the caller reads the result. It
+ * leaves the texture's image layout the same way.
  *
  * @param[in]  texture  Texture to read.
  * @param[in]  queue    Queue the copy is submitted on. Never NULL. It must be
@@ -213,8 +225,9 @@ bool aprend_texture2d_get_data(
  * size and mip count.
  *
  * @warning Before calling, destroy every aprend_texture_view made from
- * @p texture and let every submission that uses it finish. Afterwards,
- * recompile any command list that used it, and make the views again.
+ * @p texture. Afterwards, recompile any command list that used it, and make
+ * the views again. A submission already made that uses the old image is
+ * safe: the old image is released when that work has finished.
  *
  * @param[in] texture    Texture to resize.
  * @param[in] new_width  New width of mip 0. Never 0.
@@ -257,9 +270,6 @@ typedef struct aprend_texture3d_desc {
 	 */
 	uint32_t mip_levels;
 
-	/** The memory the image is allocated in. */
-	SPUDGPU_MEMORY_FLAGS memory_flags;
-
 #if _DEBUG
 	/** A name for diagnostics. May be NULL. */
 	const char *debug_name;
@@ -292,7 +302,9 @@ aprend_texture3d aprend_texture3d_create(
  * @brief Destroys a 3D texture and the view it owns.
  *
  * @warning Every aprend_texture_view made from @p texture must be destroyed
- * first, and every submission that uses it must have finished.
+ * first, and no later submission may use it. A submission
+ * already made that uses it is safe: the GPU's side of it is released when
+ * that work has finished (aprendcontext.h, "Destroying").
  *
  * @param[in] texture Texture to destroy. NULL is accepted and does nothing.
  */
@@ -331,7 +343,7 @@ spudgpu_image aprend_texture3d_get_spudgpu_image(aprend_texture3d texture);
 /**
  * @brief Writes a region of one mip level of a 3D texture.
  *
- * Runs, blocks and leaves the texture's image layout as
+ * Submitted, not waited for, and leaving the texture's image layout as
  * aprend_texture2d_update().
  *
  * @param[in] texture  Texture to write.
@@ -368,8 +380,8 @@ bool aprend_texture3d_update(
 /**
  * @brief Reads back a region of one mip level of a 3D texture.
  *
- * Runs, blocks and leaves the texture's image layout as
- * aprend_texture2d_update().
+ * Submitted, waited for, and leaving the texture's image layout as
+ * aprend_texture2d_get_data().
  *
  * @param[in]  texture  Texture to read.
  * @param[in]  queue    Queue the copy is submitted on. Never NULL. It must be
@@ -406,8 +418,8 @@ bool aprend_texture3d_get_data(
  * The texture's own view is replaced with it, so a spudgpu_image_view or
  * spudgpu_image taken from @p texture before the call must be fetched again.
  *
- * @warning As aprend_texture2d_resize(): views destroyed and submissions
- * finished before, command lists recompiled and views made again after.
+ * @warning As aprend_texture2d_resize(): views destroyed before, command
+ * lists recompiled and views made again after.
  *
  * @param[in] texture    Texture to resize.
  * @param[in] new_width  New width of mip 0. Never 0.
@@ -515,7 +527,9 @@ aprend_texture_view aprend_texture_view_create_3d(
  * @brief Destroys a texture view. Its texture is not destroyed.
  *
  * @warning Every aprend_binding_set holding @p view must be destroyed first,
- * and every submission that uses it must have finished.
+ * and no later submission may use it. A submission
+ * already made that uses it is safe: the GPU's side of it is released when
+ * that work has finished (aprendcontext.h, "Destroying").
  *
  * @param[in] view View to destroy. NULL is accepted and does nothing.
  */

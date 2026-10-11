@@ -55,21 +55,21 @@ SPUDRESULT aprend_buffer_store_create(
 
 	// A device whose memory is the system's is written directly. One with
 	// its own gets the buffer there and a staging buffer to write through.
-	const bool staged = !instance->unified_memory;
+	//
+	// Written directly, a buffer the GPU only reads is UPLOAD memory. One a
+	// shader may write can't be: it needs DEVICE_MAPPABLE, which a device
+	// reports having and which is never a device with memory of its own.
+	const bool shader_writable = (usage & SPUDGPU_BUFFER_USAGE_STORAGE) != 0;
+	const bool staged          = shader_writable ? !instance->device_mappable_memory : !instance->unified_memory;
 
 	spudgpu_buffer_desc bd{};
-	bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
-	bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
 	bd.size         = size;
 	if (staged) {
-		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_DEVICE_LOCAL;
-		bd.usage        = usage | SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
+		bd.memory_kind = SPUDGPU_MEMORY_KIND_DEVICE;
+		bd.usage       = usage | SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
 	} else {
-		// Host-visible and host-coherent, and not device-local as well: the
-		// Vulkan backend requires every property asked for, and memory that
-		// is all three isn't something every device has.
-		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT;
-		bd.usage        = usage;
+		bd.memory_kind = shader_writable ? SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE : SPUDGPU_MEMORY_KIND_UPLOAD;
+		bd.usage       = usage;
 	}
 	SPUDRESULT sr = spudgpu_create_buffer(instance->desc.device, &bd, &store->buffer);
 	if (SPUDFAIL(sr)) {
@@ -80,9 +80,7 @@ SPUDRESULT aprend_buffer_store_create(
 		return SPUD_SUCCESS;
 
 	spudgpu_buffer_desc sd{};
-	sd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
-	sd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
-	sd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT;
+	sd.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
 	sd.size         = size;
 	sd.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
 	sr              = spudgpu_create_buffer(instance->desc.device, &sd, &store->staging);
@@ -115,7 +113,12 @@ SPUDRESULT aprend_buffer_store_write(
 	if (SPUDFAIL(sr))
 		return sr;
 	memcpy(mapped, data, (size_t)size);
+	// Every write through a mapping is flushed, on every device: the store's
+	// buffers are UPLOAD or DEVICE_MAPPABLE, both of which take it.
+	sr = spudgpu_flush_buffer(target, offset, size);
 	spudgpu_unmap_buffer(target);
+	if (SPUDFAIL(sr))
+		return sr;
 	if (!store->staging)
 		return SPUD_SUCCESS;
 
@@ -181,6 +184,7 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 		result = new (result) aprend_uniform_buffer_t();
 	else
 		return NULL;
+	result->instance = instance;
 
     SPUDRESULT sr = SPUD_SUCCESS;
 	{
@@ -227,10 +231,8 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 
 	{
 		spudgpu_buffer_desc bd{};
-		bd.buffer_flags = SPUDGPU_RESOURCE_FLAG_NONE;
-		bd.heap_flags   = SPUDGPU_HEAP_FLAG_NONE;
-		// Host-visible and host-coherent only, as aprend_storage_buffer_create.
-		bd.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT;
+		// Written by the CPU and only read by the GPU, on every device.
+		bd.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
 		bd.size         = result->total_size;
 		bd.usage        = SPUDGPU_BUFFER_USAGE_UNIFORM;
 		sr = spudgpu_create_buffer(instance->desc.device, &bd, &result->buffer);
@@ -248,6 +250,14 @@ aprend_uniform_buffer aprend_uniform_buffer_create(aprend_instance instance, con
 		sr = spudgpu_map_buffer(result->buffer, 0, result->total_size, &result->uniform_data_ptr);
         if (sr != SPUD_SUCCESS)
 			goto failedattempt;
+
+		// A new SpudGPU buffer's contents are undefined, and a block is
+		// usually written one uniform at a time: zero it, so a uniform the
+		// caller has not written yet reads 0 on every device.
+		memset(result->uniform_data_ptr, 0, result->total_size);
+		sr = spudgpu_flush_buffer(result->buffer, 0, result->total_size);
+        if (sr != SPUD_SUCCESS)
+			goto failedattempt;
 	}
 
 	return result;
@@ -258,10 +268,10 @@ failedattempt:
 	return NULL;
 }
 void aprend_uniform_buffer_destroy(aprend_uniform_buffer buffer) {
-	if (buffer) {
-		buffer->~aprend_uniform_buffer_t();
-		free(buffer);
-	}
+	if (!buffer)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(buffer->instance, buffer, &aprend_release_handle<aprend_uniform_buffer_t>);
 }
 spudgpu_buffer_view aprend_uniform_buffer_get_spudgpu_buffer_view(aprend_uniform_buffer buffer) { return buffer ? buffer->buffer_view : NULL; }
 bool aprend_uniform_buffer_update(aprend_uniform_buffer buffer, uint32_t local_offset, uint32_t size, void *pData) {
@@ -271,7 +281,8 @@ bool aprend_uniform_buffer_update(aprend_uniform_buffer buffer, uint32_t local_o
 		return false;
 	uint32_t byte_offset = buffer->buffer_view_desc.offset_from_parent_buffer + local_offset;
 	memcpy((uint8_t *)buffer->uniform_data_ptr + byte_offset, pData, size);
-	return true;
+	// The buffer stays mapped; each write is flushed all the same.
+	return !SPUDFAIL(spudgpu_flush_buffer(buffer->buffer, byte_offset, size));
 }
 bool aprend_uniform_buffer_update_by_name(aprend_uniform_buffer buffer, const char *name, void *pData) {
 	if (!buffer)
@@ -369,6 +380,7 @@ aprend_vertex_buffer aprend_vertex_buffer_create(aprend_instance instance, const
 		result = new (result) aprend_vertex_buffer_t();
 	else
 		return nullptr;
+	result->instance = instance;
 
 	result->vertex_count  = vertex_count;
 	result->vertex_stride = vertex_stride;
@@ -414,8 +426,8 @@ failedattempt:
 void aprend_vertex_buffer_destroy(aprend_vertex_buffer buffer) {
 	if (!buffer)
 		return;
-	buffer->~aprend_vertex_buffer_t();
-	free(buffer);
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(buffer->instance, buffer, &aprend_release_handle<aprend_vertex_buffer_t>);
 }
 spudgpu_buffer_view aprend_vertex_buffer_get_spudgpu_buffer_view(aprend_vertex_buffer buffer) { return buffer ? buffer->buffer_view : nullptr; }
 bool aprend_vertex_buffer_update(aprend_vertex_buffer buffer, uint32_t vertex_offset, uint32_t vertex_count, void *pData) {
@@ -455,6 +467,7 @@ aprend_index_buffer aprend_index_buffer_create(aprend_instance instance, APREND_
 		result = new (result) aprend_index_buffer_t();
 	else
 		return nullptr;
+	result->instance = instance;
 
 	result->index_count  = index_count;
 	result->index_stride = stride;
@@ -490,10 +503,10 @@ failedattempt:
 	return nullptr;
 }
 void aprend_index_buffer_destroy(aprend_index_buffer buffer) {
-	if (buffer) {
-		buffer->~aprend_index_buffer_t();
-		free(buffer);
-	}
+	if (!buffer)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(buffer->instance, buffer, &aprend_release_handle<aprend_index_buffer_t>);
 }
 spudgpu_buffer_view aprend_index_buffer_get_spudgpu_buffer_view(aprend_index_buffer buffer) { return buffer ? buffer->buffer_view : nullptr; }
 bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offset, uint32_t index_count, void *pData) {
@@ -515,22 +528,33 @@ bool aprend_index_buffer_update(aprend_index_buffer buffer, uint32_t index_offse
 APREND_INDEX_STRIDE aprend_index_buffer_get_stride(aprend_index_buffer buffer) { return buffer ? buffer->index_stride : APREND_INDEX_STRIDE_NONE; }
 uint32_t aprend_index_buffer_get_index_count(aprend_index_buffer buffer) { return buffer ? buffer->index_count : 0; }
 
-aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uint64_t size, void *pData) {
+aprend_storage_buffer aprend_storage_buffer_create(aprend_instance instance, uint64_t size, APREND_STORAGE_BUFFER_USAGE usage, void *pData) {
 	if (!instance)
 		return nullptr;
 	if (size == 0)
 		return nullptr;
+	if (usage & ~(APREND_STORAGE_BUFFER_USAGE)APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS) {
+		printf("apricot: aprend_storage_buffer_create: usage %u has a bit that is not an APREND_STORAGE_BUFFER_USAGE\n", (unsigned)usage);
+		return nullptr;
+	}
 	aprend_storage_buffer_t *result = (aprend_storage_buffer_t *)malloc(sizeof(aprend_storage_buffer_t));
 	if (result)
 		result = new (result) aprend_storage_buffer_t();
 	else
 		return nullptr;
+	result->instance = instance;
 
-	result->size = size;
+	result->size  = size;
+	result->usage = usage;
 
 	// UNORDERED_ACCESS: a storage buffer slot may be written by the shader as
-	// well as read.
-	SPUDRESULT sr = aprend_buffer_store_create(&result->store, instance, size, SPUDGPU_BUFFER_USAGE_STORAGE, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	// well as read. One that is also an indirect argument buffer is in that
+	// state only while a storage slot uses it, and a command list moves it.
+	SPUDGPU_BUFFER_USAGE spud_usage = SPUDGPU_BUFFER_USAGE_STORAGE;
+	if (usage & APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS)
+		spud_usage |= SPUDGPU_BUFFER_USAGE_INDIRECT;
+	SPUDRESULT sr = aprend_buffer_store_create(&result->store, instance, size, spud_usage, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS);
+	result->store.multi_state = (usage & APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS) != 0;
 	if (SPUDFAIL(sr))
 		goto failedattempt;
 
@@ -557,11 +581,15 @@ failedattempt:
 	free(result);
 	return nullptr;
 }
+APREND_STORAGE_BUFFER_USAGE aprend_storage_buffer_get_usage(aprend_storage_buffer buffer) {
+	return buffer ? buffer->usage : (APREND_STORAGE_BUFFER_USAGE)APREND_STORAGE_BUFFER_USAGE_NONE;
+}
+uint64_t aprend_storage_buffer_get_size(aprend_storage_buffer buffer) { return buffer ? buffer->size : 0; }
 void aprend_storage_buffer_destroy(aprend_storage_buffer buffer) {
-	if (buffer) {
-		buffer->~aprend_storage_buffer_t();
-		free(buffer);
-	}
+	if (!buffer)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(buffer->instance, buffer, &aprend_release_handle<aprend_storage_buffer_t>);
 }
 bool aprend_storage_buffer_update(aprend_storage_buffer buffer, uint64_t local_offset, uint64_t size, void *pData) {
 	if (!buffer)
@@ -623,7 +651,7 @@ bool aprend_uniform_buffer_set_update_by_name(aprend_uniform_buffer_set set, con
 	return aprend_uniform_buffer_update_by_name(set->buffers[set->instance->frame_index], name, pData);
 }
 
-aprend_storage_buffer_set aprend_storage_buffer_set_create(aprend_instance instance, uint64_t size, void *pData) {
+aprend_storage_buffer_set aprend_storage_buffer_set_create(aprend_instance instance, uint64_t size, APREND_STORAGE_BUFFER_USAGE usage, void *pData) {
 	if (!instance)
 		return nullptr;
 	if (size == 0)
@@ -635,7 +663,7 @@ aprend_storage_buffer_set aprend_storage_buffer_set_create(aprend_instance insta
 	result->instance = instance;
 
 	for (uint32_t i = 0; i < instance->desc.frames_in_flight; ++i) {
-		result->buffers[i] = aprend_storage_buffer_create(instance, size, pData);
+		result->buffers[i] = aprend_storage_buffer_create(instance, size, usage, pData);
 		if (!result->buffers[i]) {
 			result->~aprend_storage_buffer_set_t();
 			free(result);

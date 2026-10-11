@@ -4,6 +4,11 @@
 
 #include "aprendimages.h"
 
+/* Threads: the rule is in aprendcontext.h ("Threads"). A framebuffer is used
+ * by one thread at a time with everything else of its instance. Its clear
+ * and resize calls act on its attachments as the texture calls of
+ * aprendimages.h do, and are bound by the same rule as those. */
+
 #if __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -45,11 +50,11 @@ bool aprend_framebuffer_resize(
     aprend_framebuffer framebuffer,
     uint32_t width,
     uint32_t height);
-/* aprend_framebuffer_clear_colors and aprend_framebuffer_clear_depth run at
- * once on [queue], which is never NULL, and block until they have run, under the
- * same rules as aprend_texture2d_update (aprendimages.h): submissions using the attachments
- * must have completed, and the attachments are left in the image layout they
- * were found in. */
+/* aprend_framebuffer_clear_colors and aprend_framebuffer_clear_depth are
+ * submitted at once on [queue], which is never NULL, and not waited for,
+ * under the same rules as aprend_texture2d_update (aprendimages.h): the clear
+ * runs after everything submitted before it and ahead of everything after,
+ * and the attachments are left in the image layout they were found in. */
 bool aprend_framebuffer_clear_colors(
     aprend_framebuffer framebuffer,
     spudgpu_command_queue queue,

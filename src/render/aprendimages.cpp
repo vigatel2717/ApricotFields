@@ -161,7 +161,6 @@ aprend_texture2d aprend_texture2d_create(
 	spudgpu_image_desc image_desc{};
 	image_desc.usage        = (SPUDGPU_IMAGE_USAGE)desc->usage | SPUDGPU_IMAGE_USAGE_TRANSFER_DST | SPUDGPU_IMAGE_USAGE_TRANSFER_SRC;
 	image_desc.type         = SPUDGPU_IMAGE_TYPE_2D;
-	image_desc.memory_flags = desc->memory_flags;
 	image_desc.format       = desc->format;
 	image_desc.width        = desc->width;
 	image_desc.height       = desc->height;
@@ -190,10 +189,10 @@ failedattempt:
 	return nullptr;
 }
 void aprend_texture2d_destroy(aprend_texture2d texture) {
-	if (texture) {
-		texture->~aprend_texture2d_t();
-		free(texture);
-	}
+	if (!texture)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture2d_t>);
 }
 aprend_texture2d_desc aprend_texture2d_get_desc(aprend_texture2d texture) { return texture ? texture->desc : aprend_texture2d_desc{}; }
 spudgpu_image aprend_texture2d_get_spudgpu_image(aprend_texture2d texture) { return texture ? texture->image : nullptr; }
@@ -241,7 +240,7 @@ bool aprend_texture2d_update(
 
 	spudgpu_buffer_desc staging_desc{};
 	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
-	staging_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT;
+	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
 	staging_desc.size         = region_size;
 
 	spudgpu_buffer staging_buffer;
@@ -258,11 +257,14 @@ bool aprend_texture2d_update(
 	uint8_t *dst       = (uint8_t *)pMapped;
 	for (uint32_t row = 0; row < height; ++row)
 		memcpy(dst + row * aligned_row_pitch, src + row * tight_row_pitch, tight_row_pitch);
+	spudgpu_flush_buffer(staging_buffer, 0, region_size);
 	spudgpu_unmap_buffer(staging_buffer);
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	// Not waited for: the copy runs ahead of anything submitted after it,
+	// and the staging buffer is released once it has.
+	bool ok = aprend_immediate_on_texture(texture, queue, false, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level         = mip_level;
 		copy_desc.base_array_layer  = array_layer;
@@ -276,7 +278,7 @@ bool aprend_texture2d_update(
 		spudgpu_cmd_copy_buffer_to_image(cmd, staging_buffer, texture->image, &copy_desc);
 	});
 
-	spudgpu_destroy_buffer(staging_buffer);
+	aprend_instance_retire(texture->instance, staging_buffer, &aprend_release_spudgpu_buffer);
 	return ok;
 }
 bool aprend_texture2d_get_data(
@@ -320,7 +322,7 @@ bool aprend_texture2d_get_data(
 
 	spudgpu_buffer_desc staging_desc{};
 	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
-	staging_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_CACHED;
+	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_READBACK;
 	staging_desc.size         = region_size;
 
 	spudgpu_buffer staging_buffer;
@@ -329,7 +331,8 @@ bool aprend_texture2d_get_data(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
+	// Waited for: the caller reads what the copy wrote.
+	bool ok = aprend_immediate_on_texture(texture, queue, true, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level         = mip_level;
 		copy_desc.base_array_layer  = array_layer;
@@ -389,8 +392,9 @@ bool aprend_texture2d_resize(
 	}
 
 	// The old image goes only now that its replacement exists, so a failed
-	// resize leaves the texture exactly as it was.
-	spudgpu_destroy_image(texture->image);
+	// resize leaves the texture exactly as it was. Submitted work may still
+	// be using it, so it is released when that has finished.
+	aprend_instance_retire(texture->instance, texture->image, &aprend_release_spudgpu_image);
 	texture->image           = new_image;
 	texture->desc.width      = new_width;
 	texture->desc.height     = new_height;
@@ -418,7 +422,6 @@ aprend_texture3d aprend_texture3d_create(
 	spudgpu_image_desc image_desc{};
 	image_desc.usage        = (SPUDGPU_IMAGE_USAGE)desc->usage | SPUDGPU_IMAGE_USAGE_TRANSFER_DST | SPUDGPU_IMAGE_USAGE_TRANSFER_SRC;
 	image_desc.type         = SPUDGPU_IMAGE_TYPE_3D;
-	image_desc.memory_flags = desc->memory_flags;
 	image_desc.format       = desc->format;
 	image_desc.width        = desc->width;
 	image_desc.height       = desc->height;
@@ -450,10 +453,10 @@ failedattempt:
 	return nullptr;
 }
 void aprend_texture3d_destroy(aprend_texture3d texture) {
-	if (texture) {
-		texture->~aprend_texture3d_t();
-		free(texture);
-	}
+	if (!texture)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(texture->instance, texture, &aprend_release_handle<aprend_texture3d_t>);
 }
 aprend_texture3d_desc aprend_texture3d_get_desc(aprend_texture3d texture) { return texture ? texture->desc : aprend_texture3d_desc{}; }
 spudgpu_image_view aprend_texture3d_get_spudgpu_image_view(aprend_texture3d texture) { return texture ? texture->image_view : NULL; }
@@ -508,7 +511,7 @@ bool aprend_texture3d_update(
 
 	spudgpu_buffer_desc staging_desc{};
 	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_SRC;
-	staging_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_COHERENT;
+	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_UPLOAD;
 	staging_desc.size         = region_size;
 
 	spudgpu_buffer staging_buffer;
@@ -525,11 +528,14 @@ bool aprend_texture3d_update(
 	for (uint32_t z = 0; z < depth; ++z)
 		for (uint32_t row = 0; row < height; ++row)
 			memcpy(dst + z * aligned_slice_pitch + row * aligned_row_pitch, src + z * tight_slice_pitch + row * tight_row_pitch, tight_row_pitch);
+	spudgpu_flush_buffer(staging_buffer, 0, region_size);
 	spudgpu_unmap_buffer(staging_buffer);
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
+	// Not waited for: the copy runs ahead of anything submitted after it,
+	// and the staging buffer is released once it has.
+	bool ok = aprend_immediate_on_texture(texture, queue, false, SPUDGPU_IMAGE_LAYOUT_TRANSFER_DST, SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
@@ -544,7 +550,7 @@ bool aprend_texture3d_update(
 		spudgpu_cmd_copy_buffer_to_image(cmd, staging_buffer, texture->image, &copy_desc);
 	});
 
-	spudgpu_destroy_buffer(staging_buffer);
+	aprend_instance_retire(texture->instance, staging_buffer, &aprend_release_spudgpu_buffer);
 	return ok;
 }
 bool aprend_texture3d_get_data(
@@ -594,7 +600,7 @@ bool aprend_texture3d_get_data(
 
 	spudgpu_buffer_desc staging_desc{};
 	staging_desc.usage        = SPUDGPU_BUFFER_USAGE_TRANSFER_DST;
-	staging_desc.memory_flags = SPUDGPU_MEMORY_FLAGS_HOST_VISIBLE | SPUDGPU_MEMORY_FLAGS_HOST_CACHED;
+	staging_desc.memory_kind  = SPUDGPU_MEMORY_KIND_READBACK;
 	staging_desc.size         = region_size;
 
 	spudgpu_buffer staging_buffer;
@@ -603,7 +609,8 @@ bool aprend_texture3d_get_data(
 
 	uint32_t buffer_row_length_texels = (uint32_t)(aligned_row_pitch / bytes_per_pixel);
 
-	bool ok = aprend_immediate_on_texture(texture, queue, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
+	// Waited for: the caller reads what the copy wrote.
+	bool ok = aprend_immediate_on_texture(texture, queue, true, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, SPUDGPU_IMAGE_LAYOUT_TRANSFER_SRC, [&](spudgpu_command_list cmd) {
 		spudgpu_image_buffer_copy_desc copy_desc{};
 		copy_desc.mip_level           = mip_level;
 		copy_desc.array_layer_count   = 1;
@@ -674,9 +681,11 @@ bool aprend_texture3d_resize(
 	}
 
 	// The old image and its view go only now that their replacements exist,
-	// so a failed resize leaves the texture exactly as it was.
-	spudgpu_destroy_image_view(texture->image_view);
-	spudgpu_destroy_image(texture->image);
+	// so a failed resize leaves the texture exactly as it was. Submitted
+	// work may still be using them, so they are released when that has
+	// finished, the view before its image.
+	aprend_instance_retire(texture->instance, texture->image_view, &aprend_release_spudgpu_image_view);
+	aprend_instance_retire(texture->instance, texture->image, &aprend_release_spudgpu_image);
 	texture->image           = new_image;
 	texture->image_view      = new_view;
 	texture->desc.width      = new_width;
@@ -775,11 +784,11 @@ failedattempt:
 	free(result);
 	return nullptr;
 }
-void aprend_destroy_texture_view(aprend_texture_view view){
-	if (view){
-		view->~aprend_texture_view_t();
-		free(view);
-	}
+void aprend_destroy_texture_view(aprend_texture_view view) {
+	if (!view)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(view->instance, view, &aprend_release_handle<aprend_texture_view_t>);
 }
 APREND_TEXTURE_VIEW_TYPE aprend_texture_view_get_type(aprend_texture_view view) { return view ? view->view_type : APREND_TEXTURE_VIEW_TYPE_NONE; }
 APREND_TEXTURE_DIMENSION aprend_texture_view_get_dimension(aprend_texture_view view) { return view ? view->dimension : APREND_TEXTURE_DIMENSION_1D; }
@@ -827,9 +836,10 @@ aprend_sampler aprend_sampler_create(
 	return result;
 }
 void aprend_sampler_destroy(aprend_sampler sampler) {
-	if (sampler) {
-		APREND_DESTRUCT__T(sampler, aprend_sampler_t);
-	}
+	if (!sampler)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(sampler->instance, sampler, &aprend_release_handle<aprend_sampler_t>);
 }
 aprend_sampler_desc aprend_sampler_get_desc(aprend_sampler sampler) { return sampler ? sampler->desc : aprend_sampler_desc{}; }
 spudgpu_sampler aprend_sampler_get_spudgpu_sampler(aprend_sampler sampler) { return sampler ? sampler->sampler : nullptr; }

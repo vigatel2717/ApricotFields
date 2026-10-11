@@ -11,6 +11,15 @@
  * Higher-level buffer management on top of SpudGPU buffers.
  * Provides dynamic resizing, memory hints, and uniform buffer
  * field layout management.
+ *
+ * Threads: the rule is in aprendcontext.h ("Threads"). A buffer is used by
+ * one thread at a time with everything else of its instance. An update call
+ * and a submission of a list that uses the buffer are never made from two
+ * threads at once: the update writes what the submission reads. A buffer
+ * set's update calls also read the instance's frame index. The size and
+ * layout functions that take no buffer (aprend_uniform_type_get_size,
+ * aprend_buffer_element_type_get_size, aprend_buffer_layout_get_element_index
+ * and aprend_buffer_layout_get_total_size) are safe from any thread.
  ****************************************************/
 
 #if __cplusplus
@@ -76,7 +85,8 @@ typedef struct aprend_uniform_layout {
  * [offset] is the caller's and must be where the shader's block has it. The
  * buffer ends where the furthest uniform does, rounded up to 16, with an
  * array (a [size] above 1) taking 16 bytes an element, or the type's size if
- * that is larger. */
+ * that is larger. The block starts as zeroes: a uniform reads 0 until it is
+ * written. */
 aprend_uniform_buffer aprend_uniform_buffer_create(
     aprend_instance instance,
     const aprend_uniform_layout *layout);
@@ -134,12 +144,15 @@ uint32_t aprend_buffer_layout_get_element_index(
 uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout);
 
 /* Where a vertex, index or storage buffer is kept follows the device's memory
- * (SPUDGPU_DEVICE_PROPERTIES::unified_memory, read when the instance is
- * created), and the calls behave the same either way.
+ * (SPUDGPU_DEVICE_PROPERTIES::unified_memory and ::device_mappable_memory,
+ * read when the instance is created), and the calls behave the same either
+ * way.
  *
- * On a device whose memory is the system's, the buffer is host-visible and a
- * write goes straight into it. On a device with memory of its own, the buffer
- * is in that memory and a write goes into a staging copy Aprend keeps beside
+ * On a device whose memory is the system's, the buffer is mapped and a write
+ * goes straight into it; a storage buffer needs the device to have
+ * SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE for that. On a device with memory of
+ * its own, or for a storage buffer without that kind, the buffer is in the
+ * device's memory and a write goes into a staging copy Aprend keeps beside
  * it; the next aprend_command_list_submit of a list that uses the buffer
  * copies what was written across, ahead of the list's own commands.
  *
@@ -148,7 +161,7 @@ uint32_t aprend_buffer_layout_get_total_size(const aprend_buffer_layout *layout)
  * submitted work that uses the buffer has yet to finish. A buffer written and
  * never used by a submitted list is never copied.
  *
- * A uniform buffer is host-visible and written directly on every device.
+ * A uniform buffer is mapped and written directly on every device.
  *
  * A vertex buffer of [vertex_count] vertices of [vertex_layout], holding a
  * copy of the data at [pData] or left unwritten if [pData] is NULL. NULL if
@@ -198,14 +211,35 @@ bool aprend_index_buffer_update(
 APREND_INDEX_STRIDE aprend_index_buffer_get_stride(aprend_index_buffer buffer);
 uint32_t aprend_index_buffer_get_index_count(aprend_index_buffer buffer);
 
+/* What a storage buffer is used for beyond a storage slot of a binding set,
+ * which every storage buffer can be put in. */
+typedef uint32_t APREND_STORAGE_BUFFER_USAGE;
+enum {
+	APREND_STORAGE_BUFFER_USAGE_NONE = 0,
+	/* The buffer can also be the argument buffer of
+	 * APREND_COMMAND_DRAW_INDIRECT and APREND_COMMAND_DRAW_INDEXED_INDIRECT
+	 * (aprendcommands.h): the same buffer a compute shader fills through a
+	 * storage slot is then read by the draws, with no trip through the CPU.
+	 * It can equally be filled from the CPU with aprend_storage_buffer_update.
+	 * A command list moves such a buffer between the two uses itself. */
+	APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS = 1
+};
+
 /* A storage buffer of [size] bytes, holding a copy of the [size] bytes at
  * [pData], or left unwritten if [pData] is NULL. NULL if [instance] is NULL,
- * [size] is 0, or the device refuses the buffer. Where it is kept and when a
- * write is seen are as for a vertex buffer, above. */
+ * [size] is 0, [usage] has a bit that is not an APREND_STORAGE_BUFFER_USAGE,
+ * or the device refuses the buffer. Where it is kept and when a write is
+ * seen are as for a vertex buffer, above. */
 aprend_storage_buffer aprend_storage_buffer_create(
     aprend_instance instance,
     uint64_t size,
+    APREND_STORAGE_BUFFER_USAGE usage,
     void *pData);
+/* The usage [buffer] was created with; APREND_STORAGE_BUFFER_USAGE_NONE if
+ * it is NULL. */
+APREND_STORAGE_BUFFER_USAGE aprend_storage_buffer_get_usage(aprend_storage_buffer buffer);
+/* The buffer's size in bytes; 0 if [buffer] is NULL. */
+uint64_t aprend_storage_buffer_get_size(aprend_storage_buffer buffer);
 void aprend_storage_buffer_destroy(aprend_storage_buffer buffer);
 /* Copies [size] bytes from [pData] to [local_offset] bytes into [buffer].
  * False, with nothing written, if [buffer] or [pData] is NULL, [size] is 0, or
@@ -242,8 +276,8 @@ aprend_uniform_buffer_set aprend_uniform_buffer_set_create(
     aprend_instance instance,
     const aprend_uniform_layout *layout);
 /* Destroys the set and its buffers. NULL is accepted. Every binding set
- * holding it goes first, and every submission that reads it must have
- * finished. */
+ * holding it goes first, and no later submission may read it; one already
+ * made is safe (aprendcontext.h, "Destroying"). */
 void aprend_uniform_buffer_set_destroy(aprend_uniform_buffer_set set);
 /* The copy for frame [frame_index], owned by the set: not to be destroyed.
  * NULL if [set] is NULL or [frame_index] is not below frames_in_flight. */
@@ -265,10 +299,11 @@ bool aprend_uniform_buffer_set_update_by_name(
 /* A set of storage buffers of [size] bytes, as aprend_storage_buffer_create
  * makes each. Every copy starts with the [size] bytes at [pData], or
  * unwritten if [pData] is NULL. NULL if [instance] is NULL, [size] is 0, or a
- * buffer can't be created. */
+ * buffer can't be created. [usage] is every copy's. */
 aprend_storage_buffer_set aprend_storage_buffer_set_create(
     aprend_instance instance,
     uint64_t size,
+    APREND_STORAGE_BUFFER_USAGE usage,
     void *pData);
 /* As aprend_uniform_buffer_set_destroy. */
 void aprend_storage_buffer_set_destroy(aprend_storage_buffer_set set);

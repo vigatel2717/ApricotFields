@@ -36,6 +36,12 @@ aprend_graphics_pipeline_t::~aprend_graphics_pipeline_t() {
 		spudgpu_destroy_shader_pipeline(this->pipeline);
 	free(this->entry_points);
 }
+aprend_compute_pipeline_t::~aprend_compute_pipeline_t() {
+	// A pipeline that failed to create has nothing to destroy.
+	if (this->pipeline)
+		spudgpu_destroy_compute_pipeline(this->pipeline);
+	free(this->entry_point);
+}
 aprend_binding_layout_t::~aprend_binding_layout_t() {
 	// Pools, then the layout their sets were allocated against.
 	for (uint32_t i = 0; i < this->pool_count; ++i)
@@ -46,7 +52,7 @@ aprend_binding_layout_t::~aprend_binding_layout_t() {
 }
 aprend_binding_set_t::~aprend_binding_set_t() {
 	free(this->image_uses);
-	free(this->staged_stores);
+	free(this->storage_stores);
 	// A set that failed to create gives back what it got as far as acquiring.
 	for (uint32_t frame = 0; frame < this->frame_set_count; ++frame)
 		this->layout->free_sets[this->layout->free_set_count++] = this->sets[frame];
@@ -218,13 +224,29 @@ static bool aprend_binding_set_entry_resource_valid(aprend_instance instance, co
 	return true;
 }
 
+// Whether [device] can run a mesh shader pipeline. A device that can't
+// answer is one that can't.
+static bool aprend_device_supports_mesh_shading(spudgpu_device device) {
+#if SPUDGPU_EXT_MESH_SHADING
+	spudgpu_mesh_shading_capabilities caps{};
+	if (SPUDFAIL(spudgpu_get_mesh_shading_capabilities(device, &caps)))
+		return false;
+	return caps.supported;
+#else
+	(void)device;
+	return false;
+#endif
+}
+
 static bool aprend_shader_stage_supported(SPUDGPU_SHADER_STAGE shader_stage) {
 	switch (shader_stage) {
 	case SPUDGPU_SHADER_STAGE_VERTEX:
 	case SPUDGPU_SHADER_STAGE_FRAGMENT:
+	case SPUDGPU_SHADER_STAGE_COMPUTE:
+	case SPUDGPU_SHADER_STAGE_MESH:
 		return true;
 	default:
-		printf("apricot: only vertex and fragment shaders are supported now!\n");
+		printf("apricot: only vertex, fragment, compute and mesh shaders are supported now!\n");
 		return false;
 	}
 }
@@ -246,6 +268,7 @@ static SPUDRESULT aprend_shader_create_module(
 #else
 	(void)debug_name;
 #endif
+	shader->stage = shader_stage;
 	return spudgpu_create_shader_module(shader->instance->desc.device, &smd, &shader->shader_module);
 }
 
@@ -334,8 +357,10 @@ failedattempt:
 	return nullptr;
 }
 void aprend_shader_destroy(aprend_shader shader) {
-	if (shader)
-		APREND_DESTRUCT__T(shader, aprend_shader_t);
+	if (!shader)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(shader->instance, shader, &aprend_release_handle<aprend_shader_t>);
 }
 
 spudgpu_blend_attachment_desc aprend_blend_premultiplied(void) {
@@ -366,17 +391,56 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
     aprend_graphics_pipeline_desc desc) {
 	if (!instance)
 		return nullptr;
-	if (!desc.vertex_shader)
-		return nullptr;
 	if (!desc.fragment_shader)
 		return nullptr;
-	if (!desc._vertex_entry_point) {
-		printf("apricot: aprend_graphics_pipeline_create: _vertex_entry_point is NULL\n");
+	if (desc.fragment_shader->stage != SPUDGPU_SHADER_STAGE_FRAGMENT) {
+		printf("apricot: aprend_graphics_pipeline_create: fragment_shader was not created for the fragment stage\n");
 		return nullptr;
 	}
-	if (!desc._vertex_entry_point[0]) {
-		printf("apricot: aprend_graphics_pipeline_create: _vertex_entry_point is an empty string\n");
-		return nullptr;
+	// The geometry comes from a vertex shader or a mesh shader, never both.
+	if (desc.mesh_shader) {
+		if (desc.vertex_shader) {
+			printf("apricot: aprend_graphics_pipeline_create: both vertex_shader and mesh_shader are given\n");
+			return nullptr;
+		}
+		if (desc.mesh_shader->stage != SPUDGPU_SHADER_STAGE_MESH) {
+			printf("apricot: aprend_graphics_pipeline_create: mesh_shader was not created for the mesh stage\n");
+			return nullptr;
+		}
+		if (!desc._mesh_entry_point) {
+			printf("apricot: aprend_graphics_pipeline_create: _mesh_entry_point is NULL\n");
+			return nullptr;
+		}
+		if (!desc._mesh_entry_point[0]) {
+			printf("apricot: aprend_graphics_pipeline_create: _mesh_entry_point is an empty string\n");
+			return nullptr;
+		}
+		if (desc._vertex_binding_count != 0) {
+			printf("apricot: aprend_graphics_pipeline_create: a mesh shader pipeline has no vertex input, and _vertex_binding_count is %u\n",
+			       desc._vertex_binding_count);
+			return nullptr;
+		}
+		if (!aprend_device_supports_mesh_shading(instance->desc.device)) {
+			printf("apricot: aprend_graphics_pipeline_create: mesh_shader is given and the device doesn't support mesh shading\n");
+			return nullptr;
+		}
+	} else {
+		if (!desc.vertex_shader) {
+			printf("apricot: aprend_graphics_pipeline_create: neither vertex_shader nor mesh_shader is given\n");
+			return nullptr;
+		}
+		if (desc.vertex_shader->stage != SPUDGPU_SHADER_STAGE_VERTEX) {
+			printf("apricot: aprend_graphics_pipeline_create: vertex_shader was not created for the vertex stage\n");
+			return nullptr;
+		}
+		if (!desc._vertex_entry_point) {
+			printf("apricot: aprend_graphics_pipeline_create: _vertex_entry_point is NULL\n");
+			return nullptr;
+		}
+		if (!desc._vertex_entry_point[0]) {
+			printf("apricot: aprend_graphics_pipeline_create: _vertex_entry_point is an empty string\n");
+			return nullptr;
+		}
 	}
 	if (!desc._fragment_entry_point) {
 		printf("apricot: aprend_graphics_pipeline_create: _fragment_entry_point is NULL\n");
@@ -473,21 +537,34 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 
 	// The names are copied, so the desc aprend_graphics_pipeline_get_desc
 	// hands back never points at a string the caller has released.
-	const size_t vertex_entry_size   = strlen(desc._vertex_entry_point) + 1;
+	// The first name is the vertex shader's, or the mesh shader's in a mesh
+	// shader pipeline; the other of the two is not read and is left as the
+	// caller gave it.
+	result->is_mesh                  = desc.mesh_shader != nullptr;
+	const char *geometry_entry       = result->is_mesh ? desc._mesh_entry_point : desc._vertex_entry_point;
+	const size_t vertex_entry_size   = strlen(geometry_entry) + 1;
 	const size_t fragment_entry_size = strlen(desc._fragment_entry_point) + 1;
 	result->entry_points             = (char *)malloc(vertex_entry_size + fragment_entry_size);
 	if (!result->entry_points) {
 		APREND_DESTRUCT__T(result, aprend_graphics_pipeline_t);
 		return nullptr;
 	}
-	memcpy(result->entry_points, desc._vertex_entry_point, vertex_entry_size);
+	memcpy(result->entry_points, geometry_entry, vertex_entry_size);
 	memcpy(result->entry_points + vertex_entry_size, desc._fragment_entry_point, fragment_entry_size);
-	result->desc._vertex_entry_point   = result->entry_points;
 	result->desc._fragment_entry_point = result->entry_points + vertex_entry_size;
 
 	spudgpu_shader_pipeline_desc pd{};
-	pd.vertex_module        = desc.vertex_shader->shader_module;
-	pd.vertex_entry_point   = result->desc._vertex_entry_point;
+	if (result->is_mesh) {
+		result->desc._mesh_entry_point   = result->entry_points;
+		result->desc._vertex_entry_point = nullptr;
+		pd.mesh_module                   = desc.mesh_shader->shader_module;
+		pd.mesh_entry_point              = result->entry_points;
+	} else {
+		result->desc._vertex_entry_point = result->entry_points;
+		result->desc._mesh_entry_point   = nullptr;
+		pd.vertex_module                 = desc.vertex_shader->shader_module;
+		pd.vertex_entry_point            = result->entry_points;
+	}
 	pd.fragment_module      = desc.fragment_shader->shader_module;
 	pd.fragment_entry_point = result->desc._fragment_entry_point;
 
@@ -548,10 +625,136 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(
 	return result;
 }
 void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p) {
-	if (p)
-		APREND_DESTRUCT__T(p, aprend_graphics_pipeline_t);
+	if (!p)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_graphics_pipeline_t>);
 }
 aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p) { return p ? p->desc : aprend_graphics_pipeline_desc{}; }
+
+aprend_compute_pipeline aprend_compute_pipeline_create(
+    aprend_instance instance,
+    aprend_compute_pipeline_desc desc) {
+	if (!instance) {
+		printf("apricot: aprend_compute_pipeline_create: instance is NULL\n");
+		return nullptr;
+	}
+	if (!desc.compute_shader) {
+		printf("apricot: aprend_compute_pipeline_create: compute_shader is NULL\n");
+		return nullptr;
+	}
+	if (desc.compute_shader->instance != instance) {
+		printf("apricot: aprend_compute_pipeline_create: compute_shader belongs to another instance\n");
+		return nullptr;
+	}
+	if (desc.compute_shader->stage != SPUDGPU_SHADER_STAGE_COMPUTE) {
+		printf("apricot: aprend_compute_pipeline_create: compute_shader was not created for the compute stage\n");
+		return nullptr;
+	}
+	if (!desc._entry_point) {
+		printf("apricot: aprend_compute_pipeline_create: _entry_point is NULL\n");
+		return nullptr;
+	}
+	if (!desc._entry_point[0]) {
+		printf("apricot: aprend_compute_pipeline_create: _entry_point is an empty string\n");
+		return nullptr;
+	}
+	if (desc._binding_layout_count > APREND_MAX_BINDING_LAYOUTS) {
+		printf("apricot: aprend_compute_pipeline_create: _binding_layout_count %u is above APREND_MAX_BINDING_LAYOUTS\n", desc._binding_layout_count);
+		return nullptr;
+	}
+	for (uint32_t i = 0; i < desc._binding_layout_count; ++i) {
+		if (!desc._binding_layouts[i]) {
+			printf("apricot: aprend_compute_pipeline_create: _binding_layouts[%u] is NULL\n", i);
+			return nullptr;
+		}
+		if (desc._binding_layouts[i]->instance != instance) {
+			printf("apricot: aprend_compute_pipeline_create: _binding_layouts[%u] belongs to another instance\n", i);
+			return nullptr;
+		}
+	}
+	if (desc._push_constant_range_count > APREND_MAX_PUSH_CONSTANT_RANGES) {
+		printf("apricot: aprend_compute_pipeline_create: _push_constant_range_count %u is above APREND_MAX_PUSH_CONSTANT_RANGES\n",
+		       desc._push_constant_range_count);
+		return nullptr;
+	}
+	for (uint32_t i = 0; i < desc._push_constant_range_count; ++i) {
+		const spudgpu_push_constant_range_desc &range = desc._push_constant_ranges[i];
+		if (range.stage_flags != SPUDGPU_SHADER_STAGE_COMPUTE) {
+			printf("apricot: aprend_compute_pipeline_create: _push_constant_ranges[%u] has a stage other than compute alone\n", i);
+			return nullptr;
+		}
+		if (range.size == 0) {
+			printf("apricot: aprend_compute_pipeline_create: _push_constant_ranges[%u] has a size of 0\n", i);
+			return nullptr;
+		}
+		if (range.offset % 4 != 0) {
+			printf("apricot: aprend_compute_pipeline_create: _push_constant_ranges[%u] has an offset that is not a multiple of 4\n", i);
+			return nullptr;
+		}
+		if (range.size % 4 != 0) {
+			printf("apricot: aprend_compute_pipeline_create: _push_constant_ranges[%u] has a size that is not a multiple of 4\n", i);
+			return nullptr;
+		}
+		if (range.size > UINT32_MAX - range.offset) {
+			printf("apricot: aprend_compute_pipeline_create: _push_constant_ranges[%u] runs past what 32 bits can address\n", i);
+			return nullptr;
+		}
+	}
+
+	APREND_MALLOC__T(result, aprend_compute_pipeline_t);
+	if (!result)
+		return nullptr;
+	APREND_CONSTRUCT__T(result, aprend_compute_pipeline_t);
+
+	result->desc     = desc;
+	result->instance = instance;
+
+	// The name is copied, so the desc aprend_compute_pipeline_get_desc hands
+	// back never points at a string the caller has released.
+	const size_t entry_size = strlen(desc._entry_point) + 1;
+	result->entry_point     = (char *)malloc(entry_size);
+	if (!result->entry_point) {
+		APREND_DESTRUCT__T(result, aprend_compute_pipeline_t);
+		return nullptr;
+	}
+	memcpy(result->entry_point, desc._entry_point, entry_size);
+	result->desc._entry_point = result->entry_point;
+
+	spudgpu_compute_pipeline_desc pd{};
+	pd.compute_module      = desc.compute_shader->shader_module;
+	pd.compute_entry_point = result->entry_point;
+	for (uint32_t i = 0; i < desc._binding_layout_count; ++i)
+		pd.descriptor_set_layouts[i] = desc._binding_layouts[i]->layout;
+	pd.descriptor_set_layout_count = desc._binding_layout_count;
+	for (uint32_t i = 0; i < desc._push_constant_range_count; ++i) {
+		pd.push_constant_ranges[i] = desc._push_constant_ranges[i];
+		const uint32_t range_end   = desc._push_constant_ranges[i].offset + desc._push_constant_ranges[i].size;
+		if (range_end > result->push_constant_end)
+			result->push_constant_end = range_end;
+	}
+	pd.push_constant_range_count = desc._push_constant_range_count;
+#if _DEBUG
+	pd.debug_name = desc._debug_name;
+#endif
+
+	SPUDRESULT sr = spudgpu_create_compute_pipeline(instance->desc.device, &pd, &result->pipeline);
+	if (SPUDFAIL(sr)) {
+		printf("apricot: aprend_compute_pipeline_create failed: %s\n", spudresult_str(sr));
+		result->pipeline = nullptr;
+		APREND_DESTRUCT__T(result, aprend_compute_pipeline_t);
+		return nullptr;
+	}
+
+	return result;
+}
+void aprend_compute_pipeline_destroy(aprend_compute_pipeline p) {
+	if (!p)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(p->instance, p, &aprend_release_handle<aprend_compute_pipeline_t>);
+}
+aprend_compute_pipeline_desc aprend_compute_pipeline_get_desc(aprend_compute_pipeline p) { return p ? p->desc : aprend_compute_pipeline_desc{}; }
 
 aprend_binding_layout aprend_binding_layout_create(
     aprend_instance instance,
@@ -622,9 +825,10 @@ aprend_binding_layout aprend_binding_layout_create(
 	return result;
 }
 void aprend_binding_layout_destroy(aprend_binding_layout layout) {
-	if (layout) {
-		APREND_DESTRUCT__T(layout, aprend_binding_layout_t);
-	}
+	if (!layout)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(layout->instance, layout, &aprend_release_handle<aprend_binding_layout_t>);
 }
 
 aprend_binding_set aprend_binding_set_create(
@@ -705,7 +909,8 @@ aprend_binding_set aprend_binding_set_create(
 		return nullptr;
 	}
 	APREND_CONSTRUCT__T(result, aprend_binding_set_t);
-	result->layout = layout;
+	result->layout   = layout;
+	result->instance = layout->instance;
 
 	if (image_use_count > 0) {
 		result->image_uses = (aprend_binding_set_t::image_use *)calloc(image_use_count, sizeof(aprend_binding_set_t::image_use));
@@ -719,9 +924,9 @@ aprend_binding_set aprend_binding_set_create(
 
 	// Room for every entry of every frame's set: at most each one is a
 	// staged storage buffer.
-	result->staged_store_capacity = entry_count;
-	result->staged_stores         = (aprend_buffer_store **)calloc((size_t)entry_count * frame_set_count, sizeof(aprend_buffer_store *));
-	if (!result->staged_stores) {
+	result->storage_store_capacity = entry_count;
+	result->storage_stores         = (aprend_buffer_store **)calloc((size_t)entry_count * frame_set_count, sizeof(aprend_buffer_store *));
+	if (!result->storage_stores) {
 		APREND_DESTRUCT__T(result, aprend_binding_set_t);
 		free(writes);
 		free(infos);
@@ -744,7 +949,7 @@ aprend_binding_set aprend_binding_set_create(
 	}
 
 	for (uint32_t frame = 0; frame < frame_set_count; ++frame) {
-		aprend_buffer_store **frame_stores = result->staged_stores + (size_t)frame * entry_count;
+		aprend_buffer_store **frame_stores = result->storage_stores + (size_t)frame * entry_count;
 		for (uint32_t i = 0; i < entry_count; ++i) {
 			const aprend_binding_set_entry &entry = entries[i];
 			spudgpu_write_descriptor_set &write   = writes[i];
@@ -772,10 +977,9 @@ aprend_binding_set aprend_binding_set_create(
 				infos[i].buffer.offset             = buffer->buffer_view_desc.offset_from_parent_buffer + r._offset;
 				infos[i].buffer.range              = r._range ? r._range : buffer->size - r._offset;
 				write.buffer_info                  = &infos[i].buffer;
-				// The same buffer in two slots is listed twice; a command
-				// list takes each store once.
-				if (buffer->store.staging)
-					frame_stores[result->staged_store_counts[frame]++] = &buffer->store;
+				// Every storage buffer, staged or not; the same one in two
+				// slots is listed twice, and a command list takes each once.
+				frame_stores[result->storage_store_counts[frame]++] = &buffer->store;
 				continue;
 			}
 
@@ -804,9 +1008,10 @@ aprend_binding_set aprend_binding_set_create(
 	return result;
 }
 void aprend_binding_set_destroy(aprend_binding_set set) {
-	if (set) {
-		APREND_DESTRUCT__T(set, aprend_binding_set_t);
-	}
+	if (!set)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(set->instance, set, &aprend_release_handle<aprend_binding_set_t>);
 }
 
 } // Extern "C"

@@ -18,7 +18,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
+#include <atomic>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 /* ============================================================
@@ -81,6 +83,10 @@ typedef struct aprend_instance_t {
 	 * creation. Decides where vertex, index and storage buffers are kept
 	 * (aprend_buffer_store). */
 	bool unified_memory{false};
+	/* SPUDGPU_DEVICE_PROPERTIES::device_mappable_memory of desc.device, read
+	 * with it: whether a buffer a shader may write can be written directly
+	 * too (SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE). */
+	bool device_mappable_memory{false};
 	/* Which copy of every buffer set is current: 0 to
 	 * desc.frames_in_flight - 1. */
 	uint32_t frame_index{0};
@@ -91,11 +97,85 @@ typedef struct aprend_instance_t {
 	 * 0 for an index nothing has been submitted in, which the fence, starting
 	 * at 0, has already reached. */
 	spudgpu_fence frame_fence{nullptr};
-	uint64_t submit_serial{0};
+	/* Atomic because a destroy call reads it from whatever thread it is
+	 * made on (aprend_instance_retire); only a submission writes it. */
+	std::atomic<uint64_t> submit_serial{0};
 	uint64_t frame_last_serial[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	/* The one queue everything of this instance is submitted on: the queue
+	 * of its first submission, NULL until then. The serials are only an
+	 * order of completion on a single queue, so aprend_instance_submit
+	 * refuses any other. */
+	spudgpu_command_queue submit_queue{nullptr};
+	/* The release queue: what has been destroyed by its owner and may still
+	 * be in use by work the GPU hasn't finished. An entry is released once
+	 * the fence has reached its serial, which is submit_serial as it was
+	 * when the object was retired: everything submitted up to then may use
+	 * the object, and nothing submitted after may. Serials never go down
+	 * along the queue, so it is released strictly from the front, in the
+	 * order things were retired. Entries before release_head are done. */
+	struct release_entry {
+		void (*release)(void *object);
+		void *object;
+		uint64_t serial;
+	};
+	std::vector<release_entry> release_queue{};
+	size_t release_head{0};
+	/* Guards release_queue and release_head, and nothing else. It is what
+	 * lets a destroy call come from any thread: retiring only pushes an
+	 * entry under it. It is never held while a release function runs. */
+	std::mutex release_mutex{};
 } aprend_instance_t;
 
-/* The one way anything of [instance] reaches a queue. Submits [lists] on
+/* Queues [object], a handle of [instance] or something one owns, to be
+ * released with [release] once every submission made so far has finished.
+ * Every destroy call of a GPU-backed handle goes through this, so the caller
+ * of one doesn't have to know the GPU is finished with it.
+ *
+ * Safe from any thread, at the same time as anything else on the instance:
+ * it takes the serial and pushes the entry under release_mutex and does
+ * nothing more. It never releases anything itself, since a release function
+ * touches what the one-thread rule guards (SpudGPU objects, a binding
+ * layout's pools). Releasing is aprend_instance_collect's, on the thread
+ * that is using the instance.
+ *
+ * Never releases early. With no memory to queue the entry, the object is
+ * left unreleased and that is printed: there is no thread here it would be
+ * safe to release it on, and a leak under memory exhaustion is the one
+ * outcome that can't make things worse.
+ *
+ * What it can't see is a command list that was compiled against the object
+ * and not yet submitted. Compiling records nothing here; the serial is taken
+ * at retirement, so such a list, submitted afterwards, runs after the object
+ * may already be gone. Not using a destroyed object in a later submission
+ * stays the caller's. */
+void aprend_instance_retire(
+    aprend_instance instance,
+    void *object,
+    void (*release)(void *object));
+/* Releases every queued entry whose serial the fence has reached, each
+ * outside release_mutex. Only for the thread using the instance under the
+ * one-thread rule: called after each submission and each wait, never from a
+ * destroy call. Cheap when there is nothing to do. */
+void aprend_instance_collect(aprend_instance instance);
+
+/* The release function of a handle struct T: its destructor, then free.
+ * For aprend_instance_retire. */
+template <typename T> void aprend_release_handle(void *object) {
+	T *handle = (T *)object;
+	handle->~T();
+	free(handle);
+}
+/* Release functions for SpudGPU objects retired on their own, apart from the
+ * handle that owned them. */
+inline void aprend_release_spudgpu_buffer(void *object) { spudgpu_destroy_buffer((spudgpu_buffer)object); }
+inline void aprend_release_spudgpu_image(void *object) { spudgpu_destroy_image((spudgpu_image)object); }
+inline void aprend_release_spudgpu_image_view(void *object) { spudgpu_destroy_image_view((spudgpu_image_view)object); }
+inline void aprend_release_spudgpu_command_list(void *object) { spudgpu_destroy_command_list((spudgpu_command_list)object); }
+inline void aprend_release_spudgpu_command_allocator(void *object) { spudgpu_destroy_command_allocator((spudgpu_command_allocator)object); }
+
+/* The one way anything of [instance] reaches a queue. Refuses, with
+ * SPUDRESULT_GPU_INVALID_COMMAND_QUEUE and nothing submitted, a [queue] that
+ * is not the one the instance's first submission went on. Submits [lists] on
  * [queue], synchronized with [swap_chain] if it isn't NULL, and signals the
  * instance's frame fence to the next serial, which it records against the
  * current frame index and hands back through [out_serial] (NULL to skip). A
@@ -116,19 +196,25 @@ SPUDRESULT aprend_instance_wait_serial(
 /* Where the bytes of a vertex, index or storage buffer are kept, chosen from
  * the device's memory model when the buffer is created.
  *
- * On a device whose memory is the system's, [buffer] is host-visible and a
- * write goes straight into it: there is one memory, so nothing is gained by
- * a second copy.
+ * On a device whose memory is the system's, [buffer] is mapped and a write
+ * goes straight into it: there is one memory, so nothing is gained by a
+ * second copy. A vertex or index buffer is SPUDGPU_MEMORY_KIND_UPLOAD. A
+ * storage buffer, which a shader may write, is
+ * SPUDGPU_MEMORY_KIND_DEVICE_MAPPABLE where the device has that kind, and is
+ * staged like the case below where it doesn't.
  *
- * On a device with memory of its own, [buffer] is in that memory, where the
- * GPU reads it without crossing the bus, and can't be mapped. A write goes
- * into [staging], a host-visible buffer of the same size that holds
- * everything ever written, and widens the dirty range. The next
+ * On a device with memory of its own, [buffer] is SPUDGPU_MEMORY_KIND_DEVICE:
+ * in that memory, where the GPU reads it without crossing the bus, and never
+ * mapped. A write goes into [staging], an UPLOAD buffer of the same size that
+ * holds everything ever written, and widens the dirty range. The next
  * aprend_command_list_submit of a list that uses the buffer copies the dirty
  * range across ahead of the list's own commands.
  *
+ * Every write is flushed (spudgpu_flush_buffer), whichever buffer it lands
+ * in.
+ *
  * Uniform buffers don't use this: they are small and rewritten every frame,
- * and stay host-visible and mapped on every device. */
+ * and are UPLOAD memory, mapped for life, on every device. */
 struct aprend_buffer_store {
 	aprend_instance instance{nullptr};
 	/* What the GPU reads, and what views and descriptors are made of. */
@@ -142,6 +228,11 @@ struct aprend_buffer_store {
 	 * dirty_end), empty when the two are equal. */
 	uint64_t dirty_begin{0};
 	uint64_t dirty_end{0};
+	/* The buffer is used in more than one state: a storage buffer that is
+	 * also an indirect argument buffer. A command list tracks the state of
+	 * such a store and moves it (aprend_command_list_t::buffer_states); a
+	 * store that is only ever used in [use_state] needs no tracking. */
+	bool multi_state{false};
 };
 
 /* Creates [store]'s buffers, of [size] bytes and for [usage]. On failure the
@@ -177,6 +268,18 @@ typedef struct aprend_command_list_t {
 	spudgpu_command_list upload_list{nullptr};
 	/* Every staged buffer store the last compile found in use, once each. */
 	std::vector<aprend_buffer_store *> staged_stores{};
+	/* The state of each multi-state buffer store as the compile walks the
+	 * list, from the first point the list uses it. Every such store starts
+	 * the list in its use_state: aprend_command_list_submit puts it there
+	 * ahead of the list's own commands, whether or not it also copies into
+	 * it, so the barriers compiled here always name the state the buffer is
+	 * really in. Kept after the compile for submit to know which stores
+	 * those are. */
+	struct buffer_state {
+		aprend_buffer_store *store;
+		SPUDGPU_RESOURCE_STATE state;
+	};
+	std::vector<buffer_state> buffer_states{};
 	/* The instance's frame index at the last compile, and whether the list
 	 * binds a set that has a descriptor set for each frame. Such a list
 	 * reads that frame's copies and is only submittable while the frame index
@@ -244,6 +347,8 @@ typedef struct aprend_uniform_buffer_t {
 #endif
 	aprend_uniform_buffer_t() = default;
 	~aprend_uniform_buffer_t();
+	/* For aprend_instance_retire when the handle is destroyed. */
+	aprend_instance instance{nullptr};
 	spudgpu_buffer buffer{nullptr};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
@@ -258,6 +363,8 @@ typedef struct aprend_vertex_buffer_t {
 #endif
 	aprend_vertex_buffer_t() = default;
 	~aprend_vertex_buffer_t();
+	/* For aprend_instance_retire when the handle is destroyed. */
+	aprend_instance instance{nullptr};
 	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
@@ -272,6 +379,8 @@ typedef struct aprend_index_buffer_t {
 #endif
 	aprend_index_buffer_t() = default;
 	~aprend_index_buffer_t();
+	/* For aprend_instance_retire when the handle is destroyed. */
+	aprend_instance instance{nullptr};
 	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
@@ -285,10 +394,13 @@ typedef struct aprend_storage_buffer_t {
 #endif
 	aprend_storage_buffer_t() = default;
 	~aprend_storage_buffer_t();
+	/* For aprend_instance_retire when the handle is destroyed. */
+	aprend_instance instance{nullptr};
 	aprend_buffer_store store{};
 	spudgpu_buffer_view buffer_view{nullptr};
 	spudgpu_buffer_view_desc buffer_view_desc{};
 	uint64_t size{0};
+	APREND_STORAGE_BUFFER_USAGE usage{APREND_STORAGE_BUFFER_USAGE_NONE};
 } aprend_storage_buffer_t;
 
 /* One uniform buffer for each frame in flight, all of one layout.
@@ -324,6 +436,9 @@ typedef struct aprend_shader_t {
 	~aprend_shader_t();
 	aprend_instance instance{nullptr};
 	spudgpu_shader_module shader_module{nullptr};
+	/* The one stage the shader was created for, so a pipeline can refuse a
+	 * shader put in the wrong place. */
+	SPUDGPU_SHADER_STAGE stage{SPUDGPU_SHADER_STAGE_NONE};
 } aprend_shader_t;
 
 typedef struct aprend_graphics_pipeline_t {
@@ -344,7 +459,26 @@ typedef struct aprend_graphics_pipeline_t {
 	uint32_t vertex_strides[APREND_MAX_VERTEX_BINDINGS]{};
 	/* Where the furthest push constant range ends; 0 with no ranges. */
 	uint32_t push_constant_end{0};
+	/* Created with a mesh shader in place of a vertex shader: it is run
+	 * with DISPATCH_MESH and reads no vertex buffers. */
+	bool is_mesh{false};
 } aprend_graphics_pipeline_t;
+
+typedef struct aprend_compute_pipeline_t {
+#if _DEBUG
+	char *debug_name{nullptr};
+#endif
+	aprend_compute_pipeline_t() = default;
+	~aprend_compute_pipeline_t();
+	aprend_compute_pipeline_desc desc{};
+	aprend_instance instance{nullptr};
+	spudgpu_compute_pipeline pipeline{nullptr};
+	/* The pipeline's copy of the entry point's name; desc's pointer points
+	 * at it, not at the caller's string. */
+	char *entry_point{nullptr};
+	/* Where the furthest push constant range ends; 0 with no ranges. */
+	uint32_t push_constant_end{0};
+} aprend_compute_pipeline_t;
 
 typedef struct aprend_binding_layout_t {
 #if _DEBUG
@@ -378,6 +512,8 @@ typedef struct aprend_binding_set_t {
 #endif
 	aprend_binding_set_t() = default;
 	~aprend_binding_set_t();
+	/* For aprend_instance_retire when the handle is destroyed. */
+	aprend_instance instance{nullptr};
 	aprend_binding_layout layout{nullptr};
 	/* From the layout's pools; each goes back on its free list. One set if
 	 * every entry is a single buffer, texture or sampler. If any entry is a
@@ -394,13 +530,16 @@ typedef struct aprend_binding_set_t {
 	};
 	image_use *image_uses{nullptr};
 	uint32_t image_use_count{0};
-	/* The store of every storage buffer the set holds that has a staging
-	 * buffer, for a command list to copy before it runs. One run of
-	 * staged_store_capacity slots for each of the frame_set_count sets, run f
-	 * holding staged_store_counts[f] stores: what sets[f] reads. */
-	aprend_buffer_store **staged_stores{nullptr};
-	uint32_t staged_store_capacity{0};
-	uint32_t staged_store_counts[APREND_MAX_FRAMES_IN_FLIGHT]{};
+	/* The store of every storage buffer the set holds, staged or not. A
+	 * command list copies the staged ones before it runs, and orders every
+	 * one of them against earlier writes before a pass or a dispatch that
+	 * reads the set (a shader may have written it). One run of
+	 * storage_store_capacity slots for each of the frame_set_count sets, run
+	 * f holding storage_store_counts[f] stores: what sets[f] reads. The same
+	 * buffer in two slots is listed twice. */
+	aprend_buffer_store **storage_stores{nullptr};
+	uint32_t storage_store_capacity{0};
+	uint32_t storage_store_counts[APREND_MAX_FRAMES_IN_FLIGHT]{};
 } aprend_binding_set_t;
 
 /* Which of [set]'s descriptor sets a command list compiled in frame [frame]

@@ -6,6 +6,15 @@
  * @file aprendpipeline.h
  * @brief Shaders, graphics pipelines, and the binding layouts and sets that
  * give a pipeline's shaders their buffers, textures and samplers.
+ *
+ * @par Threads
+ * The rule is in aprendcontext.h ("Threads"). Shaders, pipelines, binding
+ * layouts and binding sets are each used by one thread at a time with
+ * everything else of their instance. A binding layout's sets share the
+ * layout's descriptor pools, and a destroyed set is given back to them
+ * inside a later call on the instance, so sets of different layouts are not
+ * independent of each other across threads. The blend presets take no
+ * handle and are safe from any thread.
  */
 
 #include "aprendbuffers.h"
@@ -28,8 +37,10 @@ typedef struct aprend_shader_t *aprend_shader;
  * @param[in] instance     Instance whose device the shader is created on.
  * @param[in] filename     Path of the SPIR-V file.
  * @param[in] shader_stage The one stage the code is for. Only
- *                         SPUDGPU_SHADER_STAGE_VERTEX and
- *                         SPUDGPU_SHADER_STAGE_FRAGMENT are accepted.
+ *                         SPUDGPU_SHADER_STAGE_VERTEX,
+ *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
+ *                         SPUDGPU_SHADER_STAGE_COMPUTE and
+ *                         SPUDGPU_SHADER_STAGE_MESH are accepted.
  *
  * @return The shader, or NULL if @p instance or @p filename is NULL,
  *         @p shader_stage is not accepted, the file doesn't exist or can't be
@@ -53,8 +64,10 @@ aprend_shader aprend_shader_read_from_file_spirv(
  * @param[in] spirv_size   Size of @p spirv_code in bytes. A multiple of 4, and
  *                         not 0.
  * @param[in] shader_stage The one stage the code is for. Only
- *                         SPUDGPU_SHADER_STAGE_VERTEX and
- *                         SPUDGPU_SHADER_STAGE_FRAGMENT are accepted.
+ *                         SPUDGPU_SHADER_STAGE_VERTEX,
+ *                         SPUDGPU_SHADER_STAGE_FRAGMENT,
+ *                         SPUDGPU_SHADER_STAGE_COMPUTE and
+ *                         SPUDGPU_SHADER_STAGE_MESH are accepted.
  *
  * @return The shader, or NULL if @p instance or @p spirv_code is NULL,
  *         @p spirv_size is 0 or not a multiple of 4, @p shader_stage is not
@@ -253,7 +266,10 @@ typedef struct aprend_graphics_pipeline_desc {
 	 * @see aprend_blend_additive()
 	 */
 	spudgpu_blend_attachment_desc _blend;
-	/** The vertex stage. Required. */
+	/**
+	 * The vertex stage. Exactly one of this and #mesh_shader is given: NULL
+	 * for a mesh shader pipeline.
+	 */
 	aprend_shader vertex_shader;
 	/** The fragment stage. Required. */
 	aprend_shader fragment_shader;
@@ -265,6 +281,19 @@ typedef struct aprend_graphics_pipeline_desc {
 	const char *_vertex_entry_point;
 	/** The same for #fragment_shader. */
 	const char *_fragment_entry_point;
+	/**
+	 * A mesh shader in place of #vertex_shader: a shader created for
+	 * SPUDGPU_SHADER_STAGE_MESH, which emits its own geometry. Such a
+	 * pipeline has no vertex input (#_vertex_binding_count is 0, and
+	 * #_vertex_entry_point is not read), is run with
+	 * APREND_COMMAND_DISPATCH_MESH and not with the draw commands, and reads
+	 * what it needs through its binding sets. It can only be created on a
+	 * device that supports mesh shading
+	 * (spudgpu_get_mesh_shading_capabilities()). There is no task shader.
+	 */
+	aprend_shader mesh_shader;
+	/** The entry point of #mesh_shader, as #_vertex_entry_point. */
+	const char *_mesh_entry_point;
 
 	/** Pixel format of the color render target this pipeline writes to. */
 	SPUDGPU_FORMAT color_attachment_format;
@@ -345,7 +374,11 @@ spudgpu_blend_attachment_desc aprend_blend_additive(void);
  * @param[in] instance Instance whose device the pipeline is created on.
  * @param[in] desc     Pipeline configuration, taken by value.
  *
- * @return The pipeline, or NULL if @p instance is NULL, either shader is NULL,
+ * @return The pipeline, or NULL if @p instance is NULL, `fragment_shader` is
+ *         NULL, neither or both of `vertex_shader` and `mesh_shader` are
+ *         given, a shader was created for another stage than the one it is
+ *         given as, a mesh shader comes with vertex bindings or on a device
+ *         without mesh shading,
  *         either entry point is NULL or an empty string,
  *         `_vertex_binding_count` is above APREND_MAX_VERTEX_BINDINGS, a
  *         counted vertex binding has no elements or a stride of 0, the
@@ -368,7 +401,9 @@ aprend_graphics_pipeline aprend_graphics_pipeline_create(aprend_instance instanc
  *
  * Its shaders and binding layouts are the caller's and are not destroyed.
  *
- * @warning Every submission that draws with @p p must have finished.
+ * @warning No later submission may draw with @p p. A
+ * submission already made that uses it is safe: the GPU's side of it is
+ * released when that work has finished (aprendcontext.h, "Destroying").
  *
  * @param[in] p Pipeline to destroy. NULL is accepted and does nothing.
  */
@@ -381,10 +416,113 @@ void aprend_graphics_pipeline_destroy(aprend_graphics_pipeline p);
  *
  * @return The descriptor as it was passed to
  *         aprend_graphics_pipeline_create(), pointers included, except that
- *         the two entry point names are the pipeline's own copies and are
- *         valid until it is destroyed; zeroed if @p p is NULL.
+ *         the entry point names are the pipeline's own copies, valid until
+ *         it is destroyed, and the one of `_vertex_entry_point` and
+ *         `_mesh_entry_point` the pipeline doesn't use is NULL; zeroed if
+ *         @p p is NULL.
  */
 aprend_graphics_pipeline_desc aprend_graphics_pipeline_get_desc(aprend_graphics_pipeline p);
+
+/**
+ * @brief Configuration descriptor for a compute pipeline.
+ *
+ * No field has a default.
+ */
+typedef struct aprend_compute_pipeline_desc {
+#ifdef _DEBUG
+	/** A name for diagnostics. May be NULL. */
+	const char *_debug_name;
+#endif
+	/**
+	 * The compute stage: a shader created for
+	 * SPUDGPU_SHADER_STAGE_COMPUTE. Required.
+	 */
+	aprend_shader compute_shader;
+	/**
+	 * Name of the function #compute_shader starts at, `main` for GLSL.
+	 * Required, and not an empty string. Copied: the pointer only has to
+	 * live for aprend_compute_pipeline_create().
+	 */
+	const char *_entry_point;
+	/**
+	 * The descriptor sets the shader uses: `_binding_layouts[N]` describes
+	 * `set = N`. The first #_binding_layout_count entries must all be set;
+	 * the rest are ignored. They are the same aprend_binding_layout objects
+	 * a graphics pipeline declares, so one layout and its sets serve both.
+	 * A dispatch needs an aprend_binding_set of the same layout at each of
+	 * those slots first (APREND_COMMAND_SET_BINDING_SET). The layouts must
+	 * outlive the pipeline.
+	 */
+	aprend_binding_layout _binding_layouts[APREND_MAX_BINDING_LAYOUTS];
+	/** How many set slots are declared. At most APREND_MAX_BINDING_LAYOUTS. */
+	uint32_t _binding_layout_count;
+	/**
+	 * The byte ranges of the shader's push constant block. The first
+	 * #_push_constant_range_count entries are read. Each has
+	 * SPUDGPU_SHADER_STAGE_COMPUTE as its only stage, a size that is not 0,
+	 * and an offset and size that are multiples of 4. The bytes are written
+	 * with APREND_COMMAND_PUSH_CONSTANTS, sent outside a pass.
+	 */
+	spudgpu_push_constant_range_desc _push_constant_ranges[APREND_MAX_PUSH_CONSTANT_RANGES];
+	/**
+	 * How many ranges are declared. At most APREND_MAX_PUSH_CONSTANT_RANGES;
+	 * 0 is a pipeline with no push constants.
+	 */
+	uint32_t _push_constant_range_count;
+} aprend_compute_pipeline_desc;
+
+/**
+ * @brief Opaque handle to a compute pipeline.
+ *
+ * Set in a command list with APREND_COMMAND_SET_COMPUTE_PIPELINE and run
+ * with APREND_COMMAND_DISPATCH, both outside any pass.
+ */
+typedef struct aprend_compute_pipeline_t *aprend_compute_pipeline;
+
+/**
+ * @brief Creates a compute pipeline.
+ *
+ * @param[in] instance Instance whose device the pipeline is created on.
+ * @param[in] desc     Pipeline configuration, taken by value.
+ *
+ * @return The pipeline, or NULL if @p instance is NULL, `compute_shader` is
+ *         NULL, belongs to another instance or was not created for the
+ *         compute stage, `_entry_point` is NULL or an empty string,
+ *         `_binding_layout_count` is above APREND_MAX_BINDING_LAYOUTS, a
+ *         counted entry of `_binding_layouts` is NULL or belongs to another
+ *         instance, `_push_constant_range_count` is above
+ *         APREND_MAX_PUSH_CONSTANT_RANGES, a counted push constant range has
+ *         a stage other than compute alone, a size of 0, or an offset or size
+ *         that is not a multiple of 4, or the pipeline can't be created.
+ *
+ * @see aprend_compute_pipeline_destroy()
+ */
+aprend_compute_pipeline aprend_compute_pipeline_create(aprend_instance instance, aprend_compute_pipeline_desc desc);
+
+/**
+ * @brief Destroys a compute pipeline.
+ *
+ * Its shader and binding layouts are the caller's and are not destroyed.
+ *
+ * @warning No later submission may dispatch with @p p. A
+ * submission already made that uses it is safe: the GPU's side of it is
+ * released when that work has finished (aprendcontext.h, "Destroying").
+ *
+ * @param[in] p Pipeline to destroy. NULL is accepted and does nothing.
+ */
+void aprend_compute_pipeline_destroy(aprend_compute_pipeline p);
+
+/**
+ * @brief Reads the descriptor a compute pipeline was created with.
+ *
+ * @param[in] p Pipeline to read.
+ *
+ * @return The descriptor as it was passed to
+ *         aprend_compute_pipeline_create(), pointers included, except that
+ *         the entry point name is the pipeline's own copy and is valid until
+ *         it is destroyed; zeroed if @p p is NULL.
+ */
+aprend_compute_pipeline_desc aprend_compute_pipeline_get_desc(aprend_compute_pipeline p);
 
 /**
  * @brief Opaque handle to the resources filling one aprend_binding_layout's
@@ -486,8 +624,8 @@ typedef struct aprend_binding_set_entry {
  * the next (aprend_command_list_submit() refuses it otherwise). A set of
  * single buffers, textures and samplers alone has no such limit.
  *
- * @note Creating and destroying sets of the same layout from two threads at
- * once is not safe. Sets of different layouts are independent.
+ * @note Not safe from two threads at once, for sets of one layout or of
+ * different ones: see "Threads" at the top of this header.
  *
  * @param[in] layout      Layout whose slots the set fills.
  * @param[in] entries     One entry for every array element of every binding
@@ -513,7 +651,9 @@ aprend_binding_set aprend_binding_set_create(
  *
  * The resources it holds are the caller's and are not destroyed.
  *
- * @warning Every submission that binds @p set must have finished.
+ * @warning No later submission may bind @p set. A
+ * submission already made that uses it is safe: the GPU's side of it is
+ * released when that work has finished (aprendcontext.h, "Destroying").
  *
  * @param[in] set Set to destroy. NULL is accepted and does nothing.
  */

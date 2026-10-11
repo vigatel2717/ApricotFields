@@ -26,11 +26,12 @@ static void aprend_cmd_use_store(
 	cmd_list->staged_stores.push_back(store);
 }
 
-/* Records into [cmd_list]'s upload list a copy of the dirty range of every
- * staged store the list uses, each buffer moved into COPY_DEST for the copy
- * and into the state it is used in after it. [out_recorded] says whether
- * anything was dirty; if not, the upload list is left as it was and must not
- * be submitted. */
+/* Records into [cmd_list]'s upload list what has to happen ahead of the
+ * list's own commands: a copy of the dirty range of every staged store the
+ * list uses, each buffer moved into COPY_DEST for the copy and into the state
+ * it is used in after it; and every store whose state the list tracks put in
+ * its use_state. [out_recorded] says whether there was anything; if not, the
+ * upload list is left as it was and must not be submitted. */
 static void aprend_cmd_record_uploads(
     aprend_command_list cmd_list,
     bool *out_recorded) {
@@ -43,6 +44,15 @@ static void aprend_cmd_record_uploads(
 		before.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, SPUDGPU_RESOURCE_STATE_COPY_DEST});
 		after.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_COPY_DEST, store->use_state});
 	}
+	// A store whose state the list's barriers track must start the list in
+	// its use_state, which the copy above leaves it in. One with nothing to
+	// copy is put there directly, so the list starts the same either way.
+	for (const auto &tracked : cmd_list->buffer_states) {
+		aprend_buffer_store *store = tracked.store;
+		if (store->staging && store->dirty_begin != store->dirty_end)
+			continue;
+		before.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_COMMON, store->use_state});
+	}
 	if (before.empty())
 		return;
 
@@ -54,7 +64,8 @@ static void aprend_cmd_record_uploads(
 			continue;
 		spudgpu_cmd_copy_buffer(upload, store->staging, store->buffer, store->dirty_begin, store->dirty_begin, store->dirty_end - store->dirty_begin);
 	}
-	spudgpu_cmd_pipeline_barrier(upload, after.data(), (uint32_t)after.size(), nullptr, 0);
+	if (!after.empty())
+		spudgpu_cmd_pipeline_barrier(upload, after.data(), (uint32_t)after.size(), nullptr, 0);
 	spudgpu_end_command_list(upload);
 	*out_recorded = true;
 }
@@ -87,10 +98,10 @@ failedattempt:
 	return nullptr;
 }
 void aprend_command_list_destroy(aprend_command_list cmd_list) {
-	if (cmd_list) {
-		cmd_list->~aprend_command_list_t();
-		free(cmd_list);
-	}
+	if (!cmd_list)
+		return;
+	// Released once the GPU has finished everything submitted so far.
+	aprend_instance_retire(cmd_list->instance, cmd_list, &aprend_release_handle<aprend_command_list_t>);
 }
 
 void aprend_command_list_reset(aprend_command_list cmd_list) {
@@ -107,6 +118,7 @@ void aprend_command_list_reset(aprend_command_list cmd_list) {
 	cmd_list->recording_error = false;
 	cmd_list->layout_uses.clear();
 	cmd_list->staged_stores.clear();
+	cmd_list->buffer_states.clear();
 	cmd_list->compiled           = false;
 	cmd_list->present_swap_chain = nullptr;
 }
@@ -195,6 +207,105 @@ void aprend_send_command(
 			p._scissor_rects = cmd_list->scissor_rect_storage.back().data();
 		} else {
 			p._scissor_rects = nullptr;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_DRAW_INDIRECT || cmd._type == APREND_COMMAND_DRAW_INDEXED_INDIRECT) {
+		const auto &p = cmd._params._draw_indirect;
+		// What one entry is depends on which of the two commands this is.
+		const uint64_t entry_size = cmd._type == APREND_COMMAND_DRAW_INDIRECT ? sizeof(spudgpu_draw_indirect_args)
+		                                                                       : sizeof(spudgpu_draw_indexed_indirect_args);
+		if (!p._buffer && !p._set) {
+			printf("aprend: indirect draw with neither a _buffer nor a _set\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._buffer && p._set) {
+			printf("aprend: indirect draw with both a _buffer and a _set\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._set && p._set->instance != cmd_list->instance) {
+			printf("aprend: indirect draw with a _set of another instance\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		// Every copy of a set has one size and one usage.
+		const aprend_storage_buffer arguments = p._set ? p._set->buffers[0] : p._buffer;
+		if (!(arguments->usage & APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS)) {
+			printf("aprend: indirect draw with a buffer created without APREND_STORAGE_BUFFER_USAGE_INDIRECT_ARGUMENTS\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._draw_count == 0) {
+			printf("aprend: indirect draw with a _draw_count of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._offset % 4 != 0) {
+			printf("aprend: indirect draw with an _offset that is not a multiple of 4\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._stride % 4 != 0) {
+			printf("aprend: indirect draw with _stride %u, not a multiple of 4\n", p._stride);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._stride < entry_size) {
+			printf("aprend: indirect draw with _stride %u, smaller than the %u bytes of one entry\n", p._stride, (unsigned)entry_size);
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._offset > arguments->size) {
+			printf("aprend: indirect draw with an _offset past the end of the buffer\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		// Where the last entry ends: every one before it is a whole stride.
+		const uint64_t span = (uint64_t)(p._draw_count - 1) * p._stride + entry_size;
+		if (span > arguments->size - p._offset) {
+			printf("aprend: indirect draw of %u entries runs past the end of the buffer\n", p._draw_count);
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_DISPATCH_MESH) {
+		const auto &p = cmd._params._dispatch_mesh;
+		if (p._group_count_x == 0) {
+			printf("aprend: DISPATCH_MESH with a _group_count_x of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._group_count_y == 0) {
+			printf("aprend: DISPATCH_MESH with a _group_count_y of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._group_count_z == 0) {
+			printf("aprend: DISPATCH_MESH with a _group_count_z of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+	}
+
+	if (cmd._type == APREND_COMMAND_DISPATCH) {
+		const auto &p = cmd._params._dispatch;
+		if (p._group_count_x == 0) {
+			printf("aprend: DISPATCH with a _group_count_x of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._group_count_y == 0) {
+			printf("aprend: DISPATCH with a _group_count_y of 0\n");
+			cmd_list->recording_error = true;
+			return;
+		}
+		if (p._group_count_z == 0) {
+			printf("aprend: DISPATCH with a _group_count_z of 0\n");
+			cmd_list->recording_error = true;
+			return;
 		}
 	}
 
@@ -381,7 +492,6 @@ static void aprend_cmd_begin_rendering(
 	desc.y                      = p._y;
 	desc.width                  = p._width;
 	desc.height                 = p._height;
-	desc.will_execute_bundles   = (p._flags & APREND_RENDERING_FLAG_EXECUTES_BUNDLES) != 0;
 
 	for (uint32_t i = 0; i < p._color_target_count; ++i) {
 		const aprend_color_target &target = p._color_targets[i];
@@ -423,6 +533,24 @@ struct aprend_pass_image {
 	SPUDGPU_IMAGE_LAYOUT layout;
 };
 
+/* Adds the storage buffers [set] holds for frame [frame] to [stores], each
+ * once. */
+static void aprend_storage_stores_add_set(
+    std::vector<aprend_buffer_store *> &stores,
+    aprend_binding_set set,
+    uint32_t frame) {
+	const uint32_t frame_slot          = aprend_binding_set_frame_slot(set, frame);
+	aprend_buffer_store **frame_stores = set->storage_stores + (size_t)frame_slot * set->storage_store_capacity;
+	for (uint32_t i = 0; i < set->storage_store_counts[frame_slot]; ++i) {
+		bool known = false;
+		for (aprend_buffer_store *store : stores)
+			if (store == frame_stores[i])
+				known = true;
+		if (!known)
+			stores.push_back(frame_stores[i]);
+	}
+}
+
 /* Adds [set]'s textures to [images]. False if one is already there in another
  * layout: sampled through one slot and a storage image through another. */
 static bool aprend_pass_images_add_set(
@@ -438,7 +566,7 @@ static bool aprend_pass_images_add_set(
 			if (pass_image.image != image)
 				continue;
 			if (pass_image.layout != use.layout) {
-				printf("aprend: a texture is in a sampled slot and a storage image slot of the binding sets of one pass\n");
+				printf("aprend: a texture is in a sampled slot and a storage image slot of the binding sets of one pass or dispatch\n");
 				return false;
 			}
 			known = true;
@@ -447,6 +575,75 @@ static bool aprend_pass_images_add_set(
 			images.push_back({image, tracked, use.layout});
 	}
 	return true;
+}
+
+/* The argument buffer of the indirect draw [command], for a list compiled in
+ * frame [frame]: its _buffer, or that frame's copy of its _set.
+ * aprend_send_command refused a command with neither or both. */
+static aprend_storage_buffer aprend_cmd_indirect_arguments(
+    const APREND_COMMAND &command,
+    uint32_t frame) {
+	const auto &p = command._params._draw_indirect;
+	return p._set ? p._set->buffers[frame] : p._buffer;
+}
+
+/* Moves a multi-state [store] into [state], tracking it in [cmd_list]'s
+ * buffer_states. The first time the list uses a store it is in its
+ * use_state, which aprend_command_list_submit sees to. Recorded outside any
+ * pass. */
+static void aprend_cmd_transition_store(
+    aprend_command_list cmd_list,
+    aprend_buffer_store *store,
+    SPUDGPU_RESOURCE_STATE state) {
+	aprend_command_list_t::buffer_state *tracked = nullptr;
+	for (auto &known : cmd_list->buffer_states)
+		if (known.store == store)
+			tracked = &known;
+	if (!tracked) {
+		cmd_list->buffer_states.push_back({store, store->use_state});
+		tracked = &cmd_list->buffer_states.back();
+	}
+	if (tracked->state == state)
+		return;
+	spudgpu_buffer_barrier barrier{store->buffer, tracked->state, state};
+	spudgpu_cmd_pipeline_barrier(cmd_list->cmd_list, &barrier, 1, nullptr, 0);
+	tracked->state = state;
+}
+
+/* Makes what a pass's or a dispatch's binding sets hold ready to be read:
+ * each texture in [images] is moved into the layout its slot reads it in,
+ * and every storage image among them and every storage buffer in [stores] is
+ * ordered after the storage writes made before this point, since a shader of
+ * an earlier dispatch or draw may have written it. Reads after reads need no
+ * barrier, so a sampled texture already in its layout gets none.
+ *
+ * The ordering is a SpudGPU pipeline barrier from UNORDERED_ACCESS to
+ * UNORDERED_ACCESS (spudgpu.h): recording it is the caller's, and Aprend
+ * can't know which of these a shader wrote, so it records it for all of
+ * them. Recorded outside any pass. */
+static void aprend_cmd_ready_set_resources(
+    aprend_command_list cmd_list,
+    const std::vector<aprend_pass_image> &images,
+    const std::vector<aprend_buffer_store *> &stores) {
+	std::vector<spudgpu_image_barrier> image_barriers;
+	for (const aprend_pass_image &pass_image : images) {
+		aprend_cmd_transition_image(cmd_list, pass_image.image, pass_image.tracked, pass_image.layout, true);
+		// GENERAL is the layout of a storage image slot.
+		if (pass_image.layout == SPUDGPU_IMAGE_LAYOUT_GENERAL)
+			image_barriers.push_back({pass_image.image, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
+	}
+	std::vector<spudgpu_buffer_barrier> buffer_barriers;
+	for (aprend_buffer_store *store : stores) {
+		// One that was last an indirect argument buffer comes back to the
+		// state a storage slot uses it in.
+		if (store->multi_state)
+			aprend_cmd_transition_store(cmd_list, store, store->use_state);
+		buffer_barriers.push_back({store->buffer, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS, SPUDGPU_RESOURCE_STATE_UNORDERED_ACCESS});
+	}
+	if (image_barriers.empty() && buffer_barriers.empty())
+		return;
+	spudgpu_cmd_pipeline_barrier(
+	    cmd_list->cmd_list, buffer_barriers.data(), (uint32_t)buffer_barriers.size(), image_barriers.data(), (uint32_t)image_barriers.size());
 }
 
 /* Before the BEGIN_RENDERING at [begin_index] opens its pass: moves every
@@ -462,6 +659,9 @@ static bool aprend_cmd_prepare_pass_images(
     size_t begin_index,
     const aprend_binding_set *slots) {
 	std::vector<aprend_pass_image> images;
+	std::vector<aprend_buffer_store *> stores;
+	/* The argument buffers of the pass's indirect draws, each once. */
+	std::vector<aprend_buffer_store *> argument_stores;
 	aprend_binding_set pass_slots[APREND_MAX_BINDING_LAYOUTS];
 	for (uint32_t slot = 0; slot < APREND_MAX_BINDING_LAYOUTS; ++slot)
 		pass_slots[slot] = slots[slot];
@@ -487,6 +687,18 @@ static bool aprend_cmd_prepare_pass_images(
 		case APREND_COMMAND_DRAW_INDEXED:
 		case APREND_COMMAND_DRAW_INSTANCED:
 		case APREND_COMMAND_DRAW_INSTANCED_INDEXED:
+		case APREND_COMMAND_DRAW_INDIRECT:
+		case APREND_COMMAND_DRAW_INDEXED_INDIRECT:
+		case APREND_COMMAND_DISPATCH_MESH:
+			if (command._type == APREND_COMMAND_DRAW_INDIRECT || command._type == APREND_COMMAND_DRAW_INDEXED_INDIRECT) {
+				aprend_buffer_store *arguments = &aprend_cmd_indirect_arguments(command, cmd_list->compiled_frame)->store;
+				bool known                     = false;
+				for (aprend_buffer_store *store : argument_stores)
+					if (store == arguments)
+						known = true;
+				if (!known)
+					argument_stores.push_back(arguments);
+			}
 			// A draw with no pipeline, or with an empty slot, fails the
 			// compile when it is reached.
 			if (!pass_pipeline)
@@ -496,6 +708,7 @@ static bool aprend_cmd_prepare_pass_images(
 					continue;
 				if (!aprend_pass_images_add_set(images, pass_slots[slot]))
 					return false;
+				aprend_storage_stores_add_set(stores, pass_slots[slot], cmd_list->compiled_frame);
 			}
 			break;
 		default:
@@ -518,11 +731,61 @@ static bool aprend_cmd_prepare_pass_images(
 		}
 	}
 
-	for (const aprend_pass_image &pass_image : images) {
-		// Reads after reads need no barrier; a storage image may have been
-		// written, so it always gets one.
-		const bool read_only = pass_image.layout == SPUDGPU_IMAGE_LAYOUT_SHADER_READ_ONLY;
-		aprend_cmd_transition_image(cmd_list, pass_image.image, pass_image.tracked, pass_image.layout, read_only);
+	// A buffer is in one state for the whole pass: it can't be read as draw
+	// arguments and be in a storage slot the pass's draws read.
+	for (aprend_buffer_store *arguments : argument_stores) {
+		for (aprend_buffer_store *store : stores) {
+			if (store == arguments) {
+				printf("aprend: the argument buffer of an indirect draw is also in one of the pass's binding sets\n");
+				return false;
+			}
+		}
+	}
+
+	aprend_cmd_ready_set_resources(cmd_list, images, stores);
+	// After the sets, so a buffer a set brought back to a storage slot's
+	// state in an earlier pass ends this one's preparation as arguments.
+	for (aprend_buffer_store *arguments : argument_stores)
+		aprend_cmd_transition_store(cmd_list, arguments, SPUDGPU_RESOURCE_STATE_INDIRECT_ARGUMENT);
+	return true;
+}
+
+/* Before a dispatch: checks the set in each slot [pipeline] declares, makes
+ * what those sets hold ready (aprend_cmd_ready_set_resources) and binds
+ * each set that isn't the one already bound there. There is no pass to move
+ * the textures ahead of, so this is done right at the dispatch. False if a
+ * slot holds no set or one of another layout, or a texture is in a sampled
+ * slot and a storage image slot of these sets. */
+static bool aprend_cmd_prepare_dispatch(
+    aprend_command_list cmd_list,
+    aprend_compute_pipeline pipeline,
+    const aprend_binding_set *slots,
+    aprend_binding_set *applied) {
+	std::vector<aprend_pass_image> images;
+	std::vector<aprend_buffer_store *> stores;
+	for (uint32_t slot = 0; slot < pipeline->desc._binding_layout_count; ++slot) {
+		aprend_binding_set set = slots[slot];
+		if (!set) {
+			printf("aprend: dispatch with a pipeline that declares set %u, but no SET_BINDING_SET has put a set there\n", slot);
+			return false;
+		}
+		if (set->layout != pipeline->desc._binding_layouts[slot]) {
+			printf("aprend: dispatch with a set at slot %u that isn't of the layout the pipeline declares there\n", slot);
+			return false;
+		}
+		if (!aprend_pass_images_add_set(images, set))
+			return false;
+		aprend_storage_stores_add_set(stores, set, cmd_list->compiled_frame);
+	}
+	aprend_cmd_ready_set_resources(cmd_list, images, stores);
+
+	for (uint32_t slot = 0; slot < pipeline->desc._binding_layout_count; ++slot) {
+		aprend_binding_set set = slots[slot];
+		if (applied[slot] == set)
+			continue;
+		spudgpu_cmd_bind_descriptor_sets_compute(
+		    cmd_list->cmd_list, pipeline->pipeline, slot, &set->sets[aprend_binding_set_frame_slot(set, cmd_list->compiled_frame)], 1);
+		applied[slot] = set;
 	}
 	return true;
 }
@@ -582,6 +845,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	cmd_list->compiled = false;
 	cmd_list->layout_uses.clear();
 	cmd_list->staged_stores.clear();
+	cmd_list->buffer_states.clear();
 	cmd_list->present_swap_chain = nullptr;
 	// Every buffer set this compile reads is read at this frame's copy.
 	cmd_list->compiled_frame  = cmd_list->instance->frame_index;
@@ -599,11 +863,17 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	aprend_graphics_pipeline bound_pipeline = nullptr;
 	/* The buffer SET_VERTEX_BUFFERS last put in each vertex buffer slot. */
 	aprend_vertex_buffer slot_vertex_buffers[APREND_MAX_VERTEX_BINDINGS]{};
+	/* The buffer SET_INDEX_BUFFER last set; none until one is. */
+	aprend_index_buffer bound_index_buffer = nullptr;
 	/* The set SET_BINDING_SET last put in each slot, and the one actually
 	 * bound there for the bound pipeline in the open pass. A draw binds
 	 * whatever differs. */
 	aprend_binding_set slot_sets[APREND_MAX_BINDING_LAYOUTS]{};
 	aprend_binding_set applied_sets[APREND_MAX_BINDING_LAYOUTS]{};
+	/* The compute pipeline set outside a pass, until the next pass or
+	 * present, and the set bound for it in each slot. */
+	aprend_compute_pipeline bound_compute_pipeline = nullptr;
+	aprend_binding_set applied_compute_sets[APREND_MAX_BINDING_LAYOUTS]{};
 
 	std::vector<spudgpu_buffer_view> vertex_buffer_views;
 
@@ -614,13 +884,27 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 		case APREND_COMMAND_DRAW_INDEXED:
 		case APREND_COMMAND_DRAW_INSTANCED:
 		case APREND_COMMAND_DRAW_INSTANCED_INDEXED:
+		case APREND_COMMAND_DRAW_INDIRECT:
+		case APREND_COMMAND_DRAW_INDEXED_INDIRECT:
+		case APREND_COMMAND_DISPATCH_MESH:
 			if (!in_pass) {
 				printf("aprend: draw command recorded outside a rendering pass\n");
 				ok = false;
 			} else if (!bound_pipeline) {
 				printf("aprend: draw command in a pass that hasn't set a pipeline\n");
 				ok = false;
+			} else if (bound_pipeline->is_mesh && command._type != APREND_COMMAND_DISPATCH_MESH) {
+				printf("aprend: draw command with a mesh shader pipeline, which is run with DISPATCH_MESH\n");
+				ok = false;
+			} else if (!bound_pipeline->is_mesh && command._type == APREND_COMMAND_DISPATCH_MESH) {
+				printf("aprend: DISPATCH_MESH with a pipeline that has no mesh shader\n");
+				ok = false;
 			} else if (!aprend_cmd_vertex_buffers_valid(bound_pipeline, slot_vertex_buffers)) {
+				ok = false;
+			} else if (!bound_index_buffer && (command._type == APREND_COMMAND_DRAW_INDEXED ||
+			                                   command._type == APREND_COMMAND_DRAW_INSTANCED_INDEXED ||
+			                                   command._type == APREND_COMMAND_DRAW_INDEXED_INDIRECT)) {
+				printf("aprend: indexed draw with no SET_INDEX_BUFFER before it\n");
 				ok = false;
 			} else {
 				ok = aprend_cmd_apply_binding_sets(cmd, bound_pipeline, slot_sets, applied_sets, cmd_list->compiled_frame);
@@ -654,6 +938,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				break;
 			}
 			spudgpu_cmd_set_index_buffer(cmd, p._index_buffer->buffer_view);
+			bound_index_buffer = p._index_buffer;
 			aprend_cmd_use_store(cmd_list, &p._index_buffer->store);
 			break;
 		}
@@ -697,8 +982,8 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			// reads yet is harmless.
 			{
 				const uint32_t frame_slot          = aprend_binding_set_frame_slot(p._set, cmd_list->compiled_frame);
-				aprend_buffer_store **frame_stores = p._set->staged_stores + (size_t)frame_slot * p._set->staged_store_capacity;
-				for (uint32_t i = 0; i < p._set->staged_store_counts[frame_slot]; ++i)
+				aprend_buffer_store **frame_stores = p._set->storage_stores + (size_t)frame_slot * p._set->storage_store_capacity;
+				for (uint32_t i = 0; i < p._set->storage_store_counts[frame_slot]; ++i)
 					aprend_cmd_use_store(cmd_list, frame_stores[i]);
 			}
 			break;
@@ -706,8 +991,25 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 		case APREND_COMMAND_PUSH_CONSTANTS: {
 			const auto &p = command._params._push_constants;
 			if (!in_pass) {
-				printf("aprend: PUSH_CONSTANTS outside a rendering pass\n");
-				ok = false;
+				// Outside a pass the block written is the compute pipeline's.
+				if (!bound_compute_pipeline) {
+					printf("aprend: PUSH_CONSTANTS outside a pass with no compute pipeline set\n");
+					ok = false;
+					break;
+				}
+				if (p._offset > bound_compute_pipeline->push_constant_end) {
+					printf("aprend: PUSH_CONSTANTS at offset %u, past the compute pipeline's push constant ranges (%u bytes)\n", p._offset,
+					       bound_compute_pipeline->push_constant_end);
+					ok = false;
+					break;
+				}
+				if (p._size > bound_compute_pipeline->push_constant_end - p._offset) {
+					printf("aprend: PUSH_CONSTANTS of %u bytes at offset %u runs past the compute pipeline's push constant ranges (%u bytes)\n",
+					       p._size, p._offset, bound_compute_pipeline->push_constant_end);
+					ok = false;
+					break;
+				}
+				spudgpu_cmd_push_constants_compute(cmd, bound_compute_pipeline->pipeline, p._offset, p._size, p._data);
 				break;
 			}
 			if (!bound_pipeline) {
@@ -730,6 +1032,45 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			spudgpu_cmd_push_constants(cmd, bound_pipeline->pipeline, p._offset, p._size, p._data);
 			break;
 		}
+		case APREND_COMMAND_SET_COMPUTE_PIPELINE: {
+			const auto &p = command._params._set_compute_pipeline;
+			if (!p._pipeline) {
+				printf("aprend: SET_COMPUTE_PIPELINE with a NULL pipeline\n");
+				ok = false;
+				break;
+			}
+			if (in_pass) {
+				printf("aprend: SET_COMPUTE_PIPELINE inside a rendering pass\n");
+				ok = false;
+				break;
+			}
+			spudgpu_cmd_bind_compute_pipeline(cmd, p._pipeline->pipeline);
+			bound_compute_pipeline = p._pipeline;
+			// Not guaranteed to survive a pipeline change on every backend:
+			// the next dispatch binds them again.
+			for (aprend_binding_set &applied : applied_compute_sets)
+				applied = nullptr;
+			break;
+		}
+		case APREND_COMMAND_DISPATCH: {
+			const auto &p = command._params._dispatch;
+			if (in_pass) {
+				printf("aprend: DISPATCH inside a rendering pass\n");
+				ok = false;
+				break;
+			}
+			if (!bound_compute_pipeline) {
+				printf("aprend: DISPATCH with no compute pipeline set since the last pass or present\n");
+				ok = false;
+				break;
+			}
+			if (!aprend_cmd_prepare_dispatch(cmd_list, bound_compute_pipeline, slot_sets, applied_compute_sets)) {
+				ok = false;
+				break;
+			}
+			spudgpu_cmd_dispatch(cmd, p._group_count_x, p._group_count_y, p._group_count_z);
+			break;
+		}
 		case APREND_COMMAND_PRESENT_TEXTURE: {
 			if (in_pass) {
 				printf("aprend: PRESENT_TEXTURE inside a rendering pass\n");
@@ -737,6 +1078,9 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 				break;
 			}
 			ok = aprend_cmd_present_texture(cmd_list, command);
+			// The copy ends compute recording on a backend that keeps it
+			// apart from copies: a compute pipeline is set again after it.
+			bound_compute_pipeline = nullptr;
 			break;
 		}
 		case APREND_COMMAND_DRAW: {
@@ -759,6 +1103,37 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			spudgpu_cmd_draw_indexed_instanced(
 			    cmd, p._index_count_per_instance, p._instance_count, p._start_index_location, p._base_vertex_location,
 			    p._start_instance_location);
+			break;
+		}
+		case APREND_COMMAND_DRAW_INDIRECT: {
+			const auto &p                   = command._params._draw_indirect;
+			aprend_storage_buffer arguments = aprend_cmd_indirect_arguments(command, cmd_list->compiled_frame);
+			if (p._set)
+				cmd_list->uses_frame_sets = true;
+			// What the CPU wrote to it is copied at submit if it is staged.
+			// It was moved to the indirect argument state before the pass.
+			aprend_cmd_use_store(cmd_list, &arguments->store);
+			spudgpu_cmd_draw_indirect(cmd, arguments->store.buffer, p._offset, p._draw_count, p._stride);
+			break;
+		}
+		case APREND_COMMAND_DRAW_INDEXED_INDIRECT: {
+			const auto &p                   = command._params._draw_indirect;
+			aprend_storage_buffer arguments = aprend_cmd_indirect_arguments(command, cmd_list->compiled_frame);
+			if (p._set)
+				cmd_list->uses_frame_sets = true;
+			aprend_cmd_use_store(cmd_list, &arguments->store);
+			spudgpu_cmd_draw_indexed_indirect(cmd, arguments->store.buffer, p._offset, p._draw_count, p._stride);
+			break;
+		}
+		case APREND_COMMAND_DISPATCH_MESH: {
+#if SPUDGPU_EXT_MESH_SHADING
+			const auto &p = command._params._dispatch_mesh;
+			spudgpu_cmd_dispatch_mesh(cmd, p._group_count_x, p._group_count_y, p._group_count_z);
+#else
+			// No mesh shader pipeline can exist in such a build, so the
+			// pipeline check above has already refused this.
+			ok = false;
+#endif
 			break;
 		}
 		case APREND_COMMAND_SET_VIEWPORTS: {
@@ -793,6 +1168,8 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 			bound_pipeline = nullptr;
 			for (aprend_binding_set &applied : applied_sets)
 				applied = nullptr;
+			// Nor does a compute pipeline outlive the pass that follows it.
+			bound_compute_pipeline = nullptr;
 			break;
 		}
 		case APREND_COMMAND_END_RENDERING: {
@@ -826,6 +1203,7 @@ bool aprend_command_list_compile(aprend_command_list cmd_list) {
 	if (!ok) {
 		cmd_list->layout_uses.clear();
 		cmd_list->staged_stores.clear();
+		cmd_list->buffer_states.clear();
 		cmd_list->present_swap_chain = nullptr;
 	}
 	cmd_list->compiled = ok;
